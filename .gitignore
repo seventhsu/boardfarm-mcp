@@ -69,3 +69,8 @@ openocd.log
 
 # Docker
 docker-compose.override.yml
+
+# Agent memory files (contain internal state, not for public repo)
+*MEMORY.md
+docs/*MEMORY.md
+memory/
