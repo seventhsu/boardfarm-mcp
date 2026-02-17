@@ -1,0 +1,151 @@
+# Board Farm Configuration
+# Define all connected boards here
+
+boards:
+  # First STM32 Nucleo board
+  nucleo-f401re-01:
+    type: stm32
+    model: nucleo-f401re
+    mcu: STM32F401RET6
+    description: "Primary development board"
+    
+    # Memory specs (KB)
+    flash_size: 512
+    ram_size: 96
+    
+    # Debug interface
+    debugger:
+      type: cmsis-dap  # or stlink, jlink
+      transport: swd   # or jtag
+      
+    # Serial connection
+    serial:
+      port: /dev/ttyACM0
+      baud: 115200
+      
+    # Build system support
+    supported_frameworks:
+      - zephyr
+      - arduino
+      - mbed
+      - baremetal
+      
+    # Zephyr-specific
+    zephyr:
+      board_name: nucleo_f401re
+      
+    # Initial state
+    status: offline  # will be detected on startup
+
+  # Second STM32 Nucleo board
+  nucleo-f401re-02:
+    type: stm32
+    model: nucleo-f401re
+    mcu: STM32F401RET6
+    description: "Testing/CI board"
+    
+    flash_size: 512
+    ram_size: 96
+    
+    debugger:
+      type: cmsis-dap
+      transport: swd
+      
+    serial:
+      port: /dev/ttyACM1  # different USB port
+      baud: 115200
+      
+    supported_frameworks:
+      - zephyr
+      - arduino
+      - baremetal
+      
+    zephyr:
+      board_name: nucleo_f401re
+      
+    status: offline
+
+# Future board examples (commented out until connected)
+# esp32-devkit-01:
+#   type: esp32
+#   model: esp32-devkitc
+#   mcu: ESP32-WROOM-32
+#   flash_size: 4096
+#   serial_port: /dev/ttyUSB0
+#   supported_frameworks: [arduino, esp-idf]
+
+# nrf52840-dongle-01:
+#   type: nordic
+#   model: nrf52840-dongle
+#   mcu: nRF52840
+#   flash_size: 1024
+#   serial_port: /dev/ttyACM2
+#   supported_frameworks: [zephyr, arduino]
+
+# Server settings
+server:
+  # Host and port
+  host: 127.0.0.1
+  port: 8080
+  
+  # MCP protocol
+  mcp_version: "2024-11-05"
+  
+  # Limits
+  max_concurrent_builds: 2
+  max_build_time_seconds: 300
+  default_board_timeout_minutes: 30
+  
+  # Logging
+  log_level: INFO
+  log_dir: ./logs
+  
+  # Security (MVP: local only)
+  auth_required: false
+  api_key: null  # set for production
+  
+# Build settings
+build:
+  # Default toolchain
+  default_toolchain: zephyr
+  
+  # Zephyr SDK path
+  zephyr_sdk: /opt/zephyr-sdk-0.16.5
+  
+  # Build cache
+  cache_dir: ./cache/builds
+  cache_size_mb: 1024
+  
+  # Container builds (optional)
+  use_docker: false
+  docker_image: zephyrprojectrtos/zephyr-build:latest
+
+# Flash settings
+flash:
+  # OpenOCD config
+  openocd_path: /usr/bin/openocd
+  openocd_scripts: /usr/share/openocd/scripts
+  
+  # Flash verification
+  verify_flash: true
+  read_back_verify: true
+  
+  # Retry settings
+  max_flash_attempts: 3
+  flash_timeout_seconds: 60
+
+# Test settings
+test:
+  default_timeout_seconds: 30
+  frameworks:
+    - pytest-embedded
+    - robot
+  
+# Monitoring
+monitor:
+  # Serial log buffer size
+  log_buffer_lines: 10000
+  
+  # Real-time streaming
+  websocket_enabled: true
+  websocket_port: 8081
