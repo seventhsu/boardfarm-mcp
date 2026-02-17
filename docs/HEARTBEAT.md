@@ -85,3 +85,9 @@ Claude Desktop integration ready - just needs config JSON.
 3. Implement real OpenOCD flashing
 4. Implement real serial monitoring
 5. Test full workflow with real hardware
+
+## Dev Agent Memory
+**Dev sub-agents must read:** `docs/DEV_MEMORY.md`  
+Contains: Project status, MVP scope, hardware wishlist, blockers, next actions  
+**MVP Priority:** Single-core workflow first — dual-core is POST-MVP  
+**Dual-core support:** Next goal after MVP ships, not part of initial release
