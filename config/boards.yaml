@@ -2,23 +2,23 @@
 # Define all connected boards here
 
 boards:
-  # First STM32 Nucleo board
-  nucleo-f401re-01:
+  # STM32 Nucleo H755ZI-Q - Board 1
+  nucleo-h755zi-q-01:
     type: stm32
-    model: nucleo-f401re
-    mcu: STM32F401RET6
-    description: "Primary development board"
+    model: nucleo-h755zi-q
+    mcu: STM32H755ZI
+    description: "Primary dual-core development board (Cortex-M7/M4)"
     
     # Memory specs (KB)
-    flash_size: 512
-    ram_size: 96
+    flash_size: 2048  # 2MB dual-bank
+    ram_size: 1024    # 1MB SRAM
     
     # Debug interface
     debugger:
-      type: cmsis-dap  # or stlink, jlink
-      transport: swd   # or jtag
+      type: stlink-v3
+      transport: swd
       
-    # Serial connection
+    # Serial connection (USB VCP)
     serial:
       port: /dev/ttyACM0
       baud: 115200
@@ -26,29 +26,30 @@ boards:
     # Build system support
     supported_frameworks:
       - zephyr
-      - arduino
       - mbed
       - baremetal
       
     # Zephyr-specific
     zephyr:
-      board_name: nucleo_f401re
+      board_name: nucleo_h755zi_q
+      soc: stm32h755xx
+      sysbuild: true  # Supports dual-core builds
       
     # Initial state
     status: offline  # will be detected on startup
 
-  # Second STM32 Nucleo board
-  nucleo-f401re-02:
+  # STM32 Nucleo H755ZI-Q - Board 2
+  nucleo-h755zi-q-02:
     type: stm32
-    model: nucleo-f401re
-    mcu: STM32F401RET6
-    description: "Testing/CI board"
+    model: nucleo-h755zi-q
+    mcu: STM32H755ZI
+    description: "Secondary dual-core testing/CI board"
     
-    flash_size: 512
-    ram_size: 96
+    flash_size: 2048
+    ram_size: 1024
     
     debugger:
-      type: cmsis-dap
+      type: stlink-v3
       transport: swd
       
     serial:
@@ -57,30 +58,59 @@ boards:
       
     supported_frameworks:
       - zephyr
-      - arduino
+      - mbed
       - baremetal
       
     zephyr:
-      board_name: nucleo_f401re
+      board_name: nucleo_h755zi_q
+      soc: stm32h755xx
+      sysbuild: true
       
     status: offline
 
-# Future board examples (commented out until connected)
-# esp32-devkit-01:
-#   type: esp32
-#   model: esp32-devkitc
-#   mcu: ESP32-WROOM-32
-#   flash_size: 4096
-#   serial_port: /dev/ttyUSB0
-#   supported_frameworks: [arduino, esp-idf]
+  # Mock boards for testing (comment out when hardware arrives)
+  nucleo-f401re-01:
+    type: stm32
+    model: nucleo-f401re
+    mcu: STM32F401RET6
+    description: "Primary development board (MOCK)"
+    flash_size: 512
+    ram_size: 96
+    debugger:
+      type: cmsis-dap
+      transport: swd
+    serial:
+      port: /dev/ttyACM0
+      baud: 115200
+    supported_frameworks:
+      - zephyr
+      - arduino
+      - mbed
+      - baremetal
+    zephyr:
+      board_name: nucleo_f401re
+    status: offline
 
-# nrf52840-dongle-01:
-#   type: nordic
-#   model: nrf52840-dongle
-#   mcu: nRF52840
-#   flash_size: 1024
-#   serial_port: /dev/ttyACM2
-#   supported_frameworks: [zephyr, arduino]
+  nucleo-f401re-02:
+    type: stm32
+    model: nucleo-f401re
+    mcu: STM32F401RET6
+    description: "Testing/CI board (MOCK)"
+    flash_size: 512
+    ram_size: 96
+    debugger:
+      type: cmsis-dap
+      transport: swd
+    serial:
+      port: /dev/ttyACM1
+      baud: 115200
+    supported_frameworks:
+      - zephyr
+      - arduino
+      - baremetal
+    zephyr:
+      board_name: nucleo_f401re
+    status: offline
 
 # Server settings
 server:
@@ -109,15 +139,15 @@ build:
   # Default toolchain
   default_toolchain: zephyr
   
-  # Zephyr SDK path
+  # Zephyr SDK path (for native builds)
   zephyr_sdk: /opt/zephyr-sdk-0.16.5
   
   # Build cache
   cache_dir: ./cache/builds
   cache_size_mb: 1024
   
-  # Container builds (optional)
-  use_docker: false
+  # Container builds (recommended)
+  use_docker: true
   docker_image: zephyrprojectrtos/zephyr-build:latest
 
 # Flash settings
