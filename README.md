@@ -15,19 +15,33 @@ Let AI coding agents interact with physical embedded hardware through the Model 
 ### Hardware Requirements
 - 2x STM32 Nucleo boards (F401RE recommended)
 - USB cables
-- Linux host (your your machine)
+- Linux host (your machine)
 
 ### Software Requirements
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (fast Python package manager)
 - OpenOCD
 - Zephyr SDK (for Zephyr builds)
 - Docker (optional, for containerized builds)
 
 ### Install
+
+This project uses [`uv`](https://docs.astral.sh/uv/) for fast Python environment management:
+
 ```bash
 git clone https://github.com/yourusername/mcp-boardfarm.git
 cd mcp-boardfarm
-pip install -e .
+
+# Create virtual environment
+uv venv
+
+# Install in editable mode
+uv pip install -e .
+```
+
+For development with all dev dependencies:
+```bash
+uv pip install -e ".[dev]"
 ```
 
 ### Configure
