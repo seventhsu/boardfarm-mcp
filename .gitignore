@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Project specific
+logs/
+cache/
+builds/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Board farm state
+*.db
+*.sqlite
+state/
+
+# Secrets
+.env
+*.key
+secrets.yaml
+
+# Zephyr
+zephyr/
+build-zephyr/
+
+# OpenOCD
+*.cfg.bak
+openocd.log
+
+# Docker
+docker-compose.override.yml
+
+# Agent memory files (contain internal state, not for public repo)
+*MEMORY.md
+docs/*MEMORY.md
+memory/
