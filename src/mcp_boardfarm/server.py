@@ -20,6 +20,8 @@ from .board_manager import BoardManager
 from .builder import ZephyrBuilder, MockBuilder
 from .flasher import OpenOCDFlasher, MockFlasher
 from .monitor import SerialMonitor, MockMonitor
+from .gdb_debugger import GDBDebuggerManager, GDBDebugger, StepType
+from .gdb_models import GDBServerConfig
 
 # Configure logging
 logging.basicConfig(
@@ -35,6 +37,7 @@ class ServerState:
         self.builder: Optional[ZephyrBuilder] = None
         self.flasher: Optional[OpenOCDFlasher] = None
         self.monitor: Optional[SerialMonitor] = None
+        self.debug_manager: Optional[GDBDebuggerManager] = None
         self.config: Optional[ServerConfig] = None
         self._monitor: Optional[MockMonitor] = None
 
@@ -55,6 +58,7 @@ async def app_lifespan(server: FastMCP):
     state.builder = ZephyrBuilder()
     state.flasher = OpenOCDFlasher()
     state.monitor = SerialMonitor()
+    state.debug_manager = GDBDebuggerManager()
     logger.info(f"Server ready. Detected {len(state.board_manager.list_boards())} boards.")
     yield state
     logger.info("Shutting down MCP Board Farm server...")
@@ -362,7 +366,303 @@ async def get_server_status(ctx: Context) -> str:
         if monitored:
             lines.append("")
             lines.append(f"Active monitors: {', '.join(monitored)}")
+    # Debug sessions
+    if state.debug_manager:
+        sessions = state.debug_manager.list_sessions()
+        if sessions:
+            lines.append("")
+            lines.append("Active Debug Sessions:")
+            for board_id, session_state in sessions.items():
+                lines.append(f"  {board_id}: {session_state.name}")
     return "\n".join(lines)
+
+
+# ============================================================================
+# GDB Debug Tools
+# ============================================================================
+
+def _get_debugger(state: ServerState, board_id: str) -> Optional[GDBDebugger]:
+    """Get or create a debugger session for a board."""
+    debugger = state.debug_manager.get_session(board_id)
+    if debugger:
+        return debugger
+    
+    board = state.board_manager.get_board(board_id)
+    if not board:
+        return None
+    
+    return state.debug_manager.create_session(board)
+
+
+@mcp.tool()
+async def debug_start_session(ctx: Context, board_id: str, elf_path: Optional[str] = None) -> str:
+    """Start a GDB debug session for a board.
+    
+    Args:
+        board_id: The board to debug
+        elf_path: Optional path to ELF file with debug symbols
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    board = state.board_manager.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+    
+    # Check if session already exists
+    existing = state.debug_manager.get_session(board_id)
+    if existing:
+        return f"Debug session already active for {board_id}. Use debug_stop_session first."
+    
+    try:
+        debugger = state.debug_manager.create_session(board)
+        result = await debugger.start_session(elf_path)
+        
+        return json.dumps(result.to_dict(), indent=2)
+    except Exception as e:
+        logger.exception(f"Failed to start debug session: {e}")
+        return f"Error starting debug session: {e}"
+
+
+@mcp.tool()
+async def debug_stop_session(ctx: Context, board_id: str) -> str:
+    """Stop a GDB debug session."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"No active debug session for board '{board_id}'."
+    
+    try:
+        result = await debugger.stop_session()
+        state.debug_manager.remove_session(board_id)
+        return json.dumps(result.to_dict(), indent=2)
+    except Exception as e:
+        logger.exception(f"Failed to stop debug session: {e}")
+        return f"Error stopping debug session: {e}"
+
+
+@mcp.tool()
+async def debug_reset(ctx: Context, board_id: str, halt: bool = True) -> str:
+    """Reset the target via GDB."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'. Start with debug_start_session."
+    
+    result = await debugger.reset(halt=halt)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_continue(ctx: Context, board_id: str) -> str:
+    """Resume execution (continue) on the target."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.continue_execution()
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_pause(ctx: Context, board_id: str) -> str:
+    """Pause/halt the target."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.pause()
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_step(ctx: Context, board_id: str, step_type: str = "into") -> str:
+    """Execute a single step.
+    
+    Args:
+        board_id: The board to step
+        step_type: "into", "over", "out", or "instruction"
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    step_types = {
+        "into": StepType.INTO,
+        "over": StepType.OVER,
+        "out": StepType.OUT,
+        "instruction": StepType.INSTRUCTION
+    }
+    
+    st = step_types.get(step_type.lower(), StepType.INTO)
+    result = await debugger.step(st)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_set_breakpoint(ctx: Context, board_id: str, location: str) -> str:
+    """Set a breakpoint.
+    
+    Args:
+        board_id: The board to set breakpoint on
+        location: File:line (e.g., "main.c:42"), function name, or address
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.set_breakpoint(location)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_clear_breakpoint(ctx: Context, board_id: str, bp_id: int) -> str:
+    """Clear a breakpoint by ID."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.clear_breakpoint(bp_id)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_list_breakpoints(ctx: Context, board_id: str) -> str:
+    """List all breakpoints."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.list_breakpoints()
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_read_registers(ctx: Context, board_id: str) -> str:
+    """Read all CPU registers."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.read_registers()
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_read_register(ctx: Context, board_id: str, register: str) -> str:
+    """Read a specific register."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.read_register(register)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_read_memory(ctx: Context, board_id: str, address: str, size: int = 16) -> str:
+    """Read memory from target.
+    
+    Args:
+        board_id: The board to read from
+        address: Memory address (hex string like "0x20000000")
+        size: Number of bytes to read
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    # Parse address
+    if address.startswith("0x"):
+        addr = int(address, 16)
+    else:
+        addr = int(address)
+    
+    result = await debugger.read_memory(addr, size)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_write_memory(ctx: Context, board_id: str, address: str, data: str) -> str:
+    """Write memory to target.
+    
+    Args:
+        board_id: The board to write to
+        address: Memory address (hex string like "0x20000000")
+        data: Hex string of bytes to write (e.g., "deadbeef" or "0xde 0xad")
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    # Parse address
+    if address.startswith("0x"):
+        addr = int(address, 16)
+    else:
+        addr = int(address)
+    
+    result = await debugger.write_memory(addr, data)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_get_stack_trace(ctx: Context, board_id: str, max_frames: int = 20) -> str:
+    """Get the call stack."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.get_stack_trace(max_frames)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_get_local_variables(ctx: Context, board_id: str) -> str:
+    """Get local variables (requires debug symbols)."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.get_local_variables()
+    return json.dumps(result.to_dict(), indent=2)
+
+
+@mcp.tool()
+async def debug_get_state(ctx: Context, board_id: str) -> str:
+    """Get current debug session state."""
+    state: ServerState = ctx.request_context.lifespan_context
+    
+    debugger = state.debug_manager.get_session(board_id)
+    if not debugger:
+        return f"Error: No active debug session for board '{board_id}'."
+    
+    result = await debugger.get_state()
+    return json.dumps(result.to_dict(), indent=2)
 
 
 def create_server() -> FastMCP:

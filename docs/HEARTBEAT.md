@@ -3,8 +3,8 @@
 # MCP Board Farm Development Tasks
 # (Bay Area job search cron runs separately at 8am)
 
-## Current Phase: Phase 1 - Foundation (Week 1)
-# Hardware: Awaiting NUCLEO-H755ZI-Q boards
+## Current Phase: Phase 2 - Hardware Integration (Week 2)
+# Hardware: NUCLEO-H755ZI-Q Board 1 connected and detected
 # Daily dev time: 1-2 hours
 
 ## Task Tracking
@@ -28,17 +28,26 @@
 - [x] CLI entry point with detect/serve/config commands
 - [x] First git commit with complete Phase 1
 
+### Completed Tasks (Phase 2 - Hardware Integration)
+- [x] Board 1 (H755ZI-Q) physically detected via USB
+- [x] ST-Link V3 recognized at Bus 001 Device 006
+- [x] Serial port /dev/ttyACM0 mapped correctly
+- [x] Board detection Python API working
+- [x] Test firmware created (bare-metal blink for PG12)
+- [x] pyocd installed and STM32H755 pack identified
+- [x] Documentation: udev rules, setup script, bring-up status
+
 ### Pending Tasks (Phase 2 - Hardware Integration)
-- [ ] OpenOCD integration (needs hardware)
-- [ ] Real serial monitoring (needs hardware)
-- [ ] End-to-end testing with real H755ZI
-- [ ] Docker build container setup
-- [ ] Unit tests with mock boards
+- [ ] Fix permissions (user in dialout group, udev rules)
+- [ ] Install ARM toolchain (gcc-arm-none-eabi)
+- [ ] Flash test firmware to Board 1
+- [ ] Verify serial output from test firmware
+- [ ] Real Zephyr builds (needs SDK or Docker)
 
 ### Blocked Tasks
-- [ ] OpenOCD flashing (needs hardware)
-- [ ] Serial monitoring (needs hardware)
-- [ ] Real Zephyr builds (needs Docker or native SDK)
+- [ ] OpenOCD flashing (needs sudo for udev rules + toolchain install)
+- [ ] Serial monitoring (needs dialout group membership)
+- [ ] Real Zephyr builds (needs Docker perms or native SDK)
 
 ## Triggers
 
@@ -60,19 +69,26 @@
 
 ## Current Status
 
-**Date:** 2026-02-17
-**Phase 1 Status:** COMPLETE
+**Date:** 2026-02-23
+**Phase 2 Status:** IN PROGRESS - Hardware detected, blocked on permissions/toolchain
 
-All core MCP tools are implemented and tested with mock boards:
-- Board management (list, reserve, release)
-- Build system (mock Zephyr builds)
-- Flash system (mock flashing)
-- Monitor system (mock serial logs)
-- Server status and control
+**Hardware Status:**
+- Board 1 (nucleo-h755zi-q-01): CONNECTED and DETECTED
+  - ST-Link V3 at USB Bus 001 Device 006 (ID 0483:374e)
+  - Serial port /dev/ttyACM0 configured at 115200 baud
+  - Board Manager reports status: AVAILABLE
+- Board 2 (nucleo-h755zi-q-02): CONFIGURED (awaiting physical connection)
 
-The server can be run with: `mcp-boardfarm serve` or `python -m mcp_boardfarm.cli serve`
+**Blockers:**
+1. User `alial` not in `dialout` group → cannot access /dev/ttyACM0
+2. No udev rules for ST-Link → pyocd/st-flash cannot access USB debug probe
+3. No ARM GCC toolchain → cannot compile firmware
 
-Claude Desktop integration ready - just needs config JSON.
+**Test Firmware Ready:**
+- Location: `test_firmware/h755_blink/h755_blink.bin`
+- Function: Blinks green LED (PG12) at ~2Hz
+- Size: 1KB bare-metal binary
+- Ready to flash once permissions are fixed
 
 ## Git Workflow Reminders
 - Commit at end of each work session [DONE]
@@ -80,11 +96,13 @@ Claude Desktop integration ready - just needs config JSON.
 - Ready to rebase onto upstream when provided
 
 ## Next Steps
-1. Await NUCLEO-H755ZI-Q hardware arrival
-2. Update config/boards.yaml with H755ZI-Q definitions
-3. Implement real OpenOCD flashing
-4. Implement real serial monitoring
-5. Test full workflow with real hardware
+1. **URGENT:** Run `sudo docs/setup_hardware.sh` to fix permissions
+2. Log out and back in for group changes
+3. Test: `pyocd list` should show ST-Link
+4. Flash test firmware to Board 1
+5. Verify: Green LED blinking
+6. Test serial: `picocom -b 115200 /dev/ttyACM0`
+7. Document successful bring-up procedure
 
 ## Dev Agent Memory
 **Dev sub-agents must read:** `docs/DEV_MEMORY.md`  
