@@ -1,4 +1,14 @@
-"""MCP Server for Board Farm - FastMCP implementation."""
+"""MCP Server for Board Farm - FastMCP implementation.
+
+This module provides the MCP server with agent-friendly tools for:
+- Board management (list, reserve, release)
+- Firmware building (build_firmware, build_status, get_build_logs)
+- Flashing and debugging
+- Serial monitoring
+
+The new build system uses a pluggable provider architecture that supports
+local builds, Docker containers, and remote build servers.
+"""
 
 import os
 import sys
@@ -13,11 +23,15 @@ from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP, Context
 
 from .models import (
-    Board, BoardState, BuildConfig, BuildResult, FlashResult,
+    Board, BoardState, BuildConfig, BuildResult as OldBuildResult, FlashResult,
     LogEntry, ServerConfig
 )
 from .board_manager import BoardManager
-from .builder import ZephyrBuilder, MockBuilder
+from .builder import BuildManager, ZephyrBuilder, MockBuilder
+from .build_providers import (
+    BuildRequest, BuildProviderFactory, BuildStatus,
+    LocalBuildProvider, DockerBuildProvider
+)
 from .flasher import OpenOCDFlasher, MockFlasher
 from .monitor import SerialMonitor, MockMonitor
 from .gdb_debugger import GDBDebuggerManager, GDBDebugger, StepType
@@ -34,16 +48,30 @@ logger = logging.getLogger(__name__)
 class ServerState:
     def __init__(self):
         self.board_manager: Optional[BoardManager] = None
-        self.builder: Optional[ZephyrBuilder] = None
+        self.build_manager: Optional[BuildManager] = None
+        self.builder: Optional[ZephyrBuilder] = None  # Legacy
         self.flasher: Optional[OpenOCDFlasher] = None
         self.monitor: Optional[SerialMonitor] = None
         self.debug_manager: Optional[GDBDebuggerManager] = None
         self.config: Optional[ServerConfig] = None
         self._monitor: Optional[MockMonitor] = None
+        self._active_builds: Dict[str, Any] = {}  # build_id -> build info
 
 
 # Create FastMCP instance
 mcp = FastMCP("mcp-boardfarm")
+
+
+def _load_build_config(config_path: str) -> Dict[str, Any]:
+    """Load build provider configuration from boards.yaml."""
+    import yaml
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+        return config.get("build_providers", {})
+    except Exception as e:
+        logger.warning(f"Could not load build config: {e}")
+        return {}
 
 
 @asynccontextmanager
@@ -55,6 +83,12 @@ async def app_lifespan(server: FastMCP):
     state.board_manager = BoardManager(config_path)
     state.board_manager.load_config()
     state.board_manager.detect_boards()
+    
+    # Initialize new build manager with provider configuration
+    build_providers_config = _load_build_config(config_path)
+    state.build_manager = BuildManager(build_providers_config)
+    
+    # Legacy builder for backward compatibility
     state.builder = ZephyrBuilder()
     state.flasher = OpenOCDFlasher()
     state.monitor = SerialMonitor()
@@ -109,127 +143,126 @@ async def list_boards(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def get_board_info(ctx: Context, board_id: str) -> str:
-    """Get detailed information about a specific board."""
+async def build_firmware(
+    ctx: Context,
+    board_id: str,
+    source: str,
+    target: str,
+    options: Optional[Dict[str, Any]] = None,
+    build_type: str = "debug"
+) -> str:
+    """Build firmware for a board.
+    
+    This is the primary agent-friendly build interface. It uses the new
+    pluggable provider system that supports local builds, Docker containers,
+    and remote build servers.
+    
+    Args:
+        board_id: The board to build for (e.g., "nucleo-h755zi-q-01")
+        source: Path to source code or sample name
+                (e.g., "/workspace/my_app" or "hello_world")
+        target: Build target in format "framework/board"
+                (e.g., "zephyr/nucleo_h755zi_q", "arduino:avr:nano")
+        options: Optional framework-specific build options
+        build_type: "debug" or "release"
+    
+    Returns:
+        Build result summary with build_id for status tracking
+        
+    Example:
+        build_firmware(
+            board_id="nucleo-h755zi-q-01",
+            source="hello_world",
+            target="zephyr/nucleo_h755zi_q"
+        )
+    """
     state: ServerState = ctx.request_context.lifespan_context
     bm = state.board_manager
     board = bm.get_board(board_id)
+    
     if not board:
         return f"Error: Board '{board_id}' not found."
-    lines = [
-        f"Board: {board.board_id}",
-        "=" * 50,
-        f"Type: {board.type}",
-        f"Model: {board.model}",
-        f"MCU: {board.mcu}",
-        f"Description: {board.description}",
-        "",
-        "Memory:",
-        f"  Flash: {board.flash_size} KB",
-        f"  RAM: {board.ram_size} KB",
-        "",
-        "Debugger:",
-        f"  Type: {board.debugger.type}",
-        f"  Transport: {board.debugger.transport}",
-        "",
-        "Serial:",
-        f"  Port: {board.serial.port}",
-        f"  Baud: {board.serial.baud}",
-        "",
-        "Capabilities:",
-        f"  Frameworks: {', '.join(board.supported_frameworks)}",
-        "",
-        "Status:",
-        f"  State: {board.status.name}",
-    ]
-    if board.reserved_by:
-        lines.append(f"  Reserved by: {board.reserved_by}")
-        if board.reserved_until:
-            lines.append(f"  Reserved until: {board.reserved_until.isoformat()}")
-    if board.current_firmware:
-        lines.append(f"  Current firmware: {board.current_firmware}")
-    if board.last_seen:
-        lines.append(f"  Last seen: {board.last_seen.isoformat()}")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-async def reserve_board(ctx: Context, board_id: str, timeout_minutes: int = 30) -> str:
-    """Reserve a board for exclusive use."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    user = "mcp-client"
-    success = bm.reserve_board(board_id, user, timeout_minutes)
-    if success:
-        return f"Board '{board_id}' reserved for {timeout_minutes} minutes."
-    else:
-        board = bm.get_board(board_id)
-        if not board:
-            return f"Board '{board_id}' not found."
-        elif board.status == BoardState.RESERVED:
-            return f"Board '{board_id}' is already reserved by {board.reserved_by}."
-        else:
-            return f"Board '{board_id}' is not available (status: {board.status.name})."
-
-
-@mcp.tool()
-async def release_board(ctx: Context, board_id: str) -> str:
-    """Release a previously reserved board."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    user = "mcp-client"
-    success = bm.release_board(board_id, user)
-    if success:
-        return f"Board '{board_id}' released."
-    else:
-        board = bm.get_board(board_id)
-        if not board:
-            return f"Board '{board_id}' not found."
-        elif board.status != BoardState.RESERVED:
-            return f"Board '{board_id}' is not reserved (status: {board.status.name})."
-        else:
-            return f"You don't have permission to release board '{board_id}'."
-
-
-@mcp.tool()
-async def build_firmware(ctx: Context, board_id: str, zephyr_sample: str = "hello_world",
-                        build_type: str = "debug") -> str:
-    """Build firmware for a board using Zephyr."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    board = bm.get_board(board_id)
-    if not board:
-        return f"Error: Board '{board_id}' not found."
-    if board.status not in (BoardState.AVAILABLE, BoardState.RESERVED):
-        return f"Error: Board '{board_id}' is not available (status: {board.status.name})."
-    zephyr_board = board.zephyr.board_name if board.zephyr else board_id.replace('-', '_')
-    logger.info(f"Building {zephyr_sample} for {board_id}")
+    
+    # Create build request
+    request = BuildRequest(
+        board_id=board_id,
+        source_path=source,
+        target=target,
+        options=options or {},
+        build_type=build_type,
+    )
+    
+    framework = request.get_framework()
+    logger.info(f"Building {target} for {board_id} (framework: {framework})")
+    
     old_status = board.status
     bm.update_board_state(board_id, BoardState.BUILDING)
+    
     try:
-        config = BuildConfig(
-            framework="zephyr",
-            board_id=board_id,
-            zephyr_board=zephyr_board,
-            zephyr_sample=zephyr_sample,
-            build_type=build_type
-        )
-        builder = MockBuilder()
-        result = builder.build(config)
+        # Use new build manager
+        if state.build_manager:
+            result = await state.build_manager.build(
+                BuildConfig(
+                    framework=framework,
+                    board_id=board_id,
+                    source_path=source,
+                    build_type=build_type,
+                )
+            )
+        else:
+            # Fallback to legacy builder
+            builder = MockBuilder()
+            result = await builder.build(
+                BuildConfig(
+                    framework=framework,
+                    board_id=board_id,
+                    source_path=source,
+                    build_type=build_type,
+                )
+            )
+        
+        # Store build info for status tracking
+        state._active_builds[result.build_id] = {
+            "board_id": board_id,
+            "target": target,
+            "framework": framework,
+            "result": result,
+        }
+        
         bm.update_board_state(board_id, old_status)
+        
+        # Format response
         lines = [
             f"Build Result: {'SUCCESS' if result.success else 'FAILED'}",
             f"Build ID: {result.build_id}",
+            f"Target: {target}",
+            f"Framework: {framework}",
             f"Duration: {result.duration_seconds:.2f}s",
-            ""
+            "",
         ]
+        
         if result.elf_path:
             lines.append(f"ELF: {result.elf_path}")
-        lines.append("")
-        lines.append("--- Build Output ---")
+        if result.bin_path:
+            lines.append(f"BIN: {result.bin_path}")
+        if result.hex_path:
+            lines.append(f"HEX: {result.hex_path}")
+        
+        if result.warnings:
+            lines.append(f"\nWarnings: {len(result.warnings)}")
+        if result.errors:
+            lines.append(f"Errors: {len(result.errors)}")
+        
+        if result.error_message:
+            lines.append(f"\nError: {result.error_message[:500]}")
+        
+        lines.append("\n--- Build Output (last 50 lines) ---")
         if result.stdout:
-            lines.append(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
+            stdout_lines = result.stdout.split('\n')
+            lines.extend(stdout_lines[-50:])
+        
         return "\n".join(lines)
+        
     except Exception as e:
         bm.update_board_state(board_id, old_status)
         logger.exception(f"Build failed: {e}")
@@ -237,432 +270,106 @@ async def build_firmware(ctx: Context, board_id: str, zephyr_sample: str = "hell
 
 
 @mcp.tool()
-async def flash_board(ctx: Context, board_id: str, build_id: str = "") -> str:
-    """Flash firmware to a board."""
+async def build_status(ctx: Context, build_id: str) -> str:
+    """Check the status of a build.
+    
+    Args:
+        build_id: The build identifier returned by build_firmware
+        
+    Returns:
+        Current build status and details
+    """
     state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    board = bm.get_board(board_id)
-    if not board:
-        return f"Error: Board '{board_id}' not found."
-    if board.status != BoardState.RESERVED:
-        return f"Error: Board '{board_id}' must be reserved before flashing."
-    logger.info(f"Flashing build to {board_id}")
-    bm.update_board_state(board_id, BoardState.FLASHING)
-    try:
-        import time
-        mock_result = BuildResult(
-            build_id=build_id or f"mock_{int(time.time())}",
-            success=True,
-            board_id=board_id,
-            framework="zephyr",
-            elf_path=f"./cache/builds/mock_{board_id}/zephyr/zephyr.elf",
-        )
-        flasher = MockFlasher()
-        result = flasher.flash(board, mock_result)
-        if result.success:
-            board.current_firmware = mock_result.build_id
-            bm.update_board_state(board_id, BoardState.RUNNING)
-        else:
-            bm.update_board_state(board_id, BoardState.RESERVED)
+    
+    if build_id in state._active_builds:
+        build_info = state._active_builds[build_id]
+        result = build_info["result"]
+        
         lines = [
-            f"Flash Result: {'SUCCESS' if result.success else 'FAILED'}",
+            f"Build ID: {build_id}",
+            f"Status: {'SUCCESS' if result.success else 'FAILED'}",
+            f"Board: {build_info['board_id']}",
+            f"Target: {build_info['target']}",
+            f"Framework: {build_info['framework']}",
             f"Duration: {result.duration_seconds:.2f}s",
         ]
-        return "\n".join(lines)
-    except Exception as e:
-        bm.update_board_state(board_id, BoardState.RESERVED)
-        logger.exception(f"Flash failed: {e}")
-        return f"Error: Flash failed with exception: {e}"
-
-
-@mcp.tool()
-async def reset_board(ctx: Context, board_id: str, reset_type: str = "soft") -> str:
-    """Reset a board."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    board = bm.get_board(board_id)
-    if not board:
-        return f"Error: Board '{board_id}' not found."
-    logger.info(f"Resetting {board_id}")
-    try:
-        flasher = MockFlasher()
-        success = flasher.reset(board, reset_type)
-        if success:
-            bm.update_board_state(board_id, BoardState.RUNNING)
-            return f"Board '{board_id}' reset successfully."
-        else:
-            return f"Failed to reset board '{board_id}'."
-    except Exception as e:
-        logger.exception(f"Reset failed: {e}")
-        return f"Error: Reset failed with exception: {e}"
-
-
-@mcp.tool()
-async def start_logging(ctx: Context, board_id: str) -> str:
-    """Start capturing serial output from a board."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    board = bm.get_board(board_id)
-    if not board:
-        return f"Error: Board '{board_id}' not found."
-    if not hasattr(state, '_monitor') or state._monitor is None:
-        state._monitor = MockMonitor()
-    success = await state._monitor.start_monitoring(board)
-    if success:
-        return f"Started logging for board '{board_id}'. Use get_logs() to retrieve output."
-    else:
-        return f"Failed to start logging for board '{board_id}'."
-
-
-@mcp.tool()
-async def stop_logging(ctx: Context, board_id: str) -> str:
-    """Stop capturing serial output from a board."""
-    state: ServerState = ctx.request_context.lifespan_context
-    if not hasattr(state, '_monitor') or state._monitor is None:
-        return f"Error: No monitoring active for board '{board_id}'."
-    logs = state._monitor.get_logs(board_id)
-    await state._monitor.stop_monitoring(board_id)
-    lines = [f"Logging stopped for board '{board_id}'.", "", f"Captured {len(logs)} log lines:", "-" * 50]
-    for entry in logs[-100:]:
-        ts = entry.timestamp.strftime("%H:%M:%S.%f")[:-3]
-        lines.append(f"[{ts}] {entry.message}")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-async def get_logs(ctx: Context, board_id: str, max_lines: int = 50) -> str:
-    """Get recent serial output from a board."""
-    state: ServerState = ctx.request_context.lifespan_context
-    if not hasattr(state, '_monitor') or state._monitor is None:
-        return f"Error: No monitoring active for board '{board_id}'."
-    logs = state._monitor.get_logs(board_id, max_lines=max_lines)
-    if not logs:
-        return f"No logs captured yet for board '{board_id}'."
-    lines = [f"Recent logs from board '{board_id}' (last {len(logs)} lines):", "-" * 50]
-    for entry in logs:
-        ts = entry.timestamp.strftime("%H:%M:%S.%f")[:-3]
-        lines.append(f"[{ts}] {entry.message}")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-async def get_server_status(ctx: Context) -> str:
-    """Get overall server status and health."""
-    state: ServerState = ctx.request_context.lifespan_context
-    bm = state.board_manager
-    boards = bm.list_boards()
-    status_counts = {}
-    for board in boards:
-        status_name = board.status.name
-        status_counts[status_name] = status_counts.get(status_name, 0) + 1
-    lines = ["MCP Board Farm Server Status", "=" * 50, "", f"Total Boards: {len(boards)}", "Board Status:"]
-    for status, count in sorted(status_counts.items()):
-        lines.append(f"  {status}: {count}")
-    available = status_counts.get('AVAILABLE', 0)
-    lines.append("")
-    lines.append(f"Available for use: {available}")
-    if hasattr(state, '_monitor') and state._monitor:
-        monitored = state._monitor.get_monitored_boards()
-        if monitored:
-            lines.append("")
-            lines.append(f"Active monitors: {', '.join(monitored)}")
-    # Debug sessions
-    if state.debug_manager:
-        sessions = state.debug_manager.list_sessions()
-        if sessions:
-            lines.append("")
-            lines.append("Active Debug Sessions:")
-            for board_id, session_state in sessions.items():
-                lines.append(f"  {board_id}: {session_state.name}")
-    return "\n".join(lines)
-
-
-# ============================================================================
-# GDB Debug Tools
-# ============================================================================
-
-def _get_debugger(state: ServerState, board_id: str) -> Optional[GDBDebugger]:
-    """Get or create a debugger session for a board."""
-    debugger = state.debug_manager.get_session(board_id)
-    if debugger:
-        return debugger
-    
-    board = state.board_manager.get_board(board_id)
-    if not board:
-        return None
-    
-    return state.debug_manager.create_session(board)
-
-
-@mcp.tool()
-async def debug_start_session(ctx: Context, board_id: str, elf_path: Optional[str] = None) -> str:
-    """Start a GDB debug session for a board.
-    
-    Args:
-        board_id: The board to debug
-        elf_path: Optional path to ELF file with debug symbols
-    """
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    board = state.board_manager.get_board(board_id)
-    if not board:
-        return f"Error: Board '{board_id}' not found."
-    
-    # Check if session already exists
-    existing = state.debug_manager.get_session(board_id)
-    if existing:
-        return f"Debug session already active for {board_id}. Use debug_stop_session first."
-    
-    try:
-        debugger = state.debug_manager.create_session(board)
-        result = await debugger.start_session(elf_path)
         
-        return json.dumps(result.to_dict(), indent=2)
-    except Exception as e:
-        logger.exception(f"Failed to start debug session: {e}")
-        return f"Error starting debug session: {e}"
+        if result.elf_path:
+            lines.append(f"ELF: {result.elf_path}")
+        
+        return "\n".join(lines)
+    
+    return f"Build '{build_id}' not found. It may have completed and been cleaned up."
 
 
 @mcp.tool()
-async def debug_stop_session(ctx: Context, board_id: str) -> str:
-    """Stop a GDB debug session."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"No active debug session for board '{board_id}'."
-    
-    try:
-        result = await debugger.stop_session()
-        state.debug_manager.remove_session(board_id)
-        return json.dumps(result.to_dict(), indent=2)
-    except Exception as e:
-        logger.exception(f"Failed to stop debug session: {e}")
-        return f"Error stopping debug session: {e}"
-
-
-@mcp.tool()
-async def debug_reset(ctx: Context, board_id: str, halt: bool = True) -> str:
-    """Reset the target via GDB."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'. Start with debug_start_session."
-    
-    result = await debugger.reset(halt=halt)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_continue(ctx: Context, board_id: str) -> str:
-    """Resume execution (continue) on the target."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.continue_execution()
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_pause(ctx: Context, board_id: str) -> str:
-    """Pause/halt the target."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.pause()
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_step(ctx: Context, board_id: str, step_type: str = "into") -> str:
-    """Execute a single step.
+async def get_build_logs(ctx: Context, build_id: str, lines: int = 100) -> str:
+    """Get logs from a build.
     
     Args:
-        board_id: The board to step
-        step_type: "into", "over", "out", or "instruction"
+        build_id: The build identifier
+        lines: Number of log lines to return (default: 100)
+        
+    Returns:
+        Build logs
     """
     state: ServerState = ctx.request_context.lifespan_context
     
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
+    if build_id not in state._active_builds:
+        return f"Build '{build_id}' not found."
     
-    step_types = {
-        "into": StepType.INTO,
-        "over": StepType.OVER,
-        "out": StepType.OUT,
-        "instruction": StepType.INSTRUCTION
-    }
+    result = state._active_builds[build_id]["result"]
     
-    st = step_types.get(step_type.lower(), StepType.INTO)
-    result = await debugger.step(st)
-    return json.dumps(result.to_dict(), indent=2)
+    output_lines = []
+    if result.stdout:
+        output_lines.extend(result.stdout.split('\n'))
+    if result.stderr:
+        output_lines.extend([f"[stderr] {line}" for line in result.stderr.split('\n')])
+    
+    return_lines = output_lines[-lines:] if len(output_lines) > lines else output_lines
+    
+    header = f"Build logs for {build_id} (last {len(return_lines)} lines):"
+    return f"{header}\n{'=' * len(header)}\n" + "\n".join(return_lines)
 
 
 @mcp.tool()
-async def debug_set_breakpoint(ctx: Context, board_id: str, location: str) -> str:
-    """Set a breakpoint.
+async def list_build_targets(ctx: Context, board_id: Optional[str] = None,
+                             framework: Optional[str] = None) -> str:
+    """List available build targets.
     
     Args:
-        board_id: The board to set breakpoint on
-        location: File:line (e.g., "main.c:42"), function name, or address
+        board_id: Optional board to filter by
+        framework: Optional framework to filter by (zephyr, arduino, etc.)
+        
+    Returns:
+        List of available build targets
     """
     state: ServerState = ctx.request_context.lifespan_context
     
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
+    lines = ["Available Build Targets:", "=" * 50]
     
-    result = await debugger.set_breakpoint(location)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_clear_breakpoint(ctx: Context, board_id: str, bp_id: int) -> str:
-    """Clear a breakpoint by ID."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.clear_breakpoint(bp_id)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_list_breakpoints(ctx: Context, board_id: str) -> str:
-    """List all breakpoints."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.list_breakpoints()
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_read_registers(ctx: Context, board_id: str) -> str:
-    """Read all CPU registers."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.read_registers()
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_read_register(ctx: Context, board_id: str, register: str) -> str:
-    """Read a specific register."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.read_register(register)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_read_memory(ctx: Context, board_id: str, address: str, size: int = 16) -> str:
-    """Read memory from target.
-    
-    Args:
-        board_id: The board to read from
-        address: Memory address (hex string like "0x20000000")
-        size: Number of bytes to read
-    """
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    # Parse address
-    if address.startswith("0x"):
-        addr = int(address, 16)
+    if framework:
+        targets = await state.build_manager.list_build_targets(framework)
+        lines.append(f"\nFramework: {framework}")
+        for target in targets[:50]:  # Limit output
+            lines.append(f"  - {target}")
+        if len(targets) > 50:
+            lines.append(f"  ... and {len(targets) - 50} more")
     else:
-        addr = int(address)
+        # Show all frameworks
+        frameworks = ["zephyr", "arduino", "platformio"]
+        for fw in frameworks:
+            try:
+                targets = await state.build_manager.list_build_targets(fw)
+                lines.append(f"\n{fw}:")
+                for target in targets[:10]:
+                    lines.append(f"  - {target}")
+                if len(targets) > 10:
+                    lines.append(f"  ... and {len(targets) - 10} more")
+            except Exception as e:
+                lines.append(f"\n{fw}: Error loading targets - {e}")
     
-    result = await debugger.read_memory(addr, size)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_write_memory(ctx: Context, board_id: str, address: str, data: str) -> str:
-    """Write memory to target.
-    
-    Args:
-        board_id: The board to write to
-        address: Memory address (hex string like "0x20000000")
-        data: Hex string of bytes to write (e.g., "deadbeef" or "0xde 0xad")
-    """
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    # Parse address
-    if address.startswith("0x"):
-        addr = int(address, 16)
-    else:
-        addr = int(address)
-    
-    result = await debugger.write_memory(addr, data)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_get_stack_trace(ctx: Context, board_id: str, max_frames: int = 20) -> str:
-    """Get the call stack."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.get_stack_trace(max_frames)
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_get_local_variables(ctx: Context, board_id: str) -> str:
-    """Get local variables (requires debug symbols)."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.get_local_variables()
-    return json.dumps(result.to_dict(), indent=2)
-
-
-@mcp.tool()
-async def debug_get_state(ctx: Context, board_id: str) -> str:
-    """Get current debug session state."""
-    state: ServerState = ctx.request_context.lifespan_context
-    
-    debugger = state.debug_manager.get_session(board_id)
-    if not debugger:
-        return f"Error: No active debug session for board '{board_id}'."
-    
-    result = await debugger.get_state()
-    return json.dumps(result.to_dict(), indent=2)
+    return "\n".join(lines)
 
 
 def create_server() -> FastMCP:

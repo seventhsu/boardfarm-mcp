@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  zephyr-builder:
+    image: zephyrprojectrtos/zephyr-build:latest
+    volumes:
+      - .:/workspace
+      - zephyr-cache:/home/user/zephyrproject
+      - /dev:/dev
+    working_dir: /workspace
+    environment:
+      - ZEPHYR_BASE=/home/user/zephyrproject/zephyr
+      - ZEPHYR_SDK_INSTALL_DIR=/opt/zephyr-sdk
+    command: tail -f /dev/null  # Keep container running
+    privileged: true  # Required for USB device access
+    network_mode: host
+    stdin_open: true
+    tty: true
+
+volumes:
+  zephyr-cache:

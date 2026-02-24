@@ -33,12 +33,14 @@ def cmd_serve(args):
     print(f"Starting MCP Board Farm server...")
     print(f"Transport: {args.transport}")
     
-    if args.transport == "stdio":
-        # Run with stdio transport (for Claude Desktop)
-        mcp.run(transport='stdio')
-    else:
-        # Run with SSE transport
-        mcp.run(transport='sse', port=args.port)
+    # Update MCP settings for SSE transport
+    if args.transport == "sse":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        print(f"Host: {args.host}")
+        print(f"Port: {args.port}")
+    
+    mcp.run(transport=args.transport)
 
 
 def cmd_detect(args):
@@ -126,10 +128,15 @@ def main():
         help='Transport type (stdio for Claude Desktop, sse for web)'
     )
     serve_parser.add_argument(
+        '--host', '-H',
+        default='127.0.0.1',
+        help='Host for SSE transport (default: 127.0.0.1)'
+    )
+    serve_parser.add_argument(
         '--port', '-p',
         type=int,
         default=8080,
-        help='Port for SSE transport'
+        help='Port for SSE transport (default: 8080)'
     )
     serve_parser.set_defaults(func=cmd_serve)
     
