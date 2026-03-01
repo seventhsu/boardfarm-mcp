@@ -66,6 +66,10 @@ class Board:
     # Capabilities
     supported_frameworks: List[str] = field(default_factory=list)
     
+    # Feature-based matching support
+    features: List[str] = field(default_factory=list)  # e.g., ["ethernet", "can", "sd_card"]
+    capabilities: Dict[str, Any] = field(default_factory=dict)  # e.g., {"ram_kb": 1024, "flash_kb": 2048}
+    
     # Runtime state
     status: BoardState = BoardState.OFFLINE
     reserved_by: Optional[str] = None
@@ -87,6 +91,8 @@ class Board:
             "description": self.description,
             "flash_size_kb": self.flash_size,
             "ram_size_kb": self.ram_size,
+            "features": self.features,
+            "capabilities": self.capabilities,
             "debugger": {
                 "type": self.debugger.type,
                 "transport": self.debugger.transport,
@@ -101,6 +107,20 @@ class Board:
             "current_firmware": self.current_firmware,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
         }
+    
+    def get_features_set(self) -> set:
+        """Get features as a set for matching."""
+        return set(self.features)
+    
+    def get_capabilities_dict(self) -> Dict[str, Any]:
+        """Get capabilities dict with defaults from flash/ram sizes."""
+        caps = dict(self.capabilities)
+        # Ensure ram_kb and flash_kb are always present
+        if "ram_kb" not in caps:
+            caps["ram_kb"] = self.ram_size
+        if "flash_kb" not in caps:
+            caps["flash_kb"] = self.flash_size
+        return caps
 
 
 @dataclass

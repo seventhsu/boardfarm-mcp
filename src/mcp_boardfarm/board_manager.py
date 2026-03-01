@@ -6,15 +6,17 @@ import json
 import yaml
 import psutil
 import logging
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Set
 from dataclasses import asdict
 
 from .models import (
     Board, BoardState, DebuggerConfig, SerialConfig, ZephyrConfig,
     ServerConfig
 )
+from .board_queue import BoardQueue, QueueEntry, QueueStatus
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +24,56 @@ logger = logging.getLogger(__name__)
 class BoardManager:
     """Manages connected boards - detection, state, and reservations."""
     
-    def __init__(self, config_path: Optional[str] = None):
+    # Valid state transitions (from_state, to_state)
+    VALID_TRANSITIONS = {
+        # From OFFLINE
+        (BoardState.OFFLINE, BoardState.AVAILABLE),
+        (BoardState.OFFLINE, BoardState.RESERVED),
+        # From AVAILABLE
+        (BoardState.AVAILABLE, BoardState.OFFLINE),
+        (BoardState.AVAILABLE, BoardState.RESERVED),
+        (BoardState.AVAILABLE, BoardState.BUILDING),
+        (BoardState.AVAILABLE, BoardState.TESTING),
+        # From RESERVED
+        (BoardState.RESERVED, BoardState.AVAILABLE),
+        (BoardState.RESERVED, BoardState.BUILDING),
+        (BoardState.RESERVED, BoardState.FLASHING),
+        (BoardState.RESERVED, BoardState.RUNNING),
+        (BoardState.RESERVED, BoardState.TESTING),
+        (BoardState.RESERVED, BoardState.ERROR),
+        # From BUILDING
+        (BoardState.BUILDING, BoardState.RESERVED),
+        (BoardState.BUILDING, BoardState.ERROR),
+        # From FLASHING
+        (BoardState.FLASHING, BoardState.RESERVED),
+        (BoardState.FLASHING, BoardState.RUNNING),
+        (BoardState.FLASHING, BoardState.ERROR),
+        # From RUNNING
+        (BoardState.RUNNING, BoardState.RESERVED),
+        (BoardState.RUNNING, BoardState.ERROR),
+        # From TESTING
+        (BoardState.TESTING, BoardState.RESERVED),
+        (BoardState.TESTING, BoardState.AVAILABLE),
+        (BoardState.TESTING, BoardState.ERROR),
+        # From ERROR
+        (BoardState.ERROR, BoardState.AVAILABLE),
+        (BoardState.ERROR, BoardState.OFFLINE),
+        (BoardState.ERROR, BoardState.RESERVED),
+    }
+    
+    def __init__(self, config_path: Optional[str] = None, board_queue: Optional[BoardQueue] = None):
         self.config_path = config_path or "config/boards.yaml"
         self.boards: Dict[str, Board] = {}
         self._state_callbacks: List[Callable[[str, BoardState, BoardState], None]] = []
         self._config: Optional[Dict] = None
+        self._queue: Optional[BoardQueue] = board_queue
+        self._lock = asyncio.Lock()  # Lock for atomic board operations
+        
+    def set_queue(self, queue: BoardQueue):
+        """Set the board queue for automatic assignment."""
+        self._queue = queue
+        # Register for assignment callbacks (async callback supported)
+        queue.register_assignment_callback(self._on_board_assigned)
         
     def load_config(self) -> Dict[str, Any]:
         """Load board configuration from YAML."""
@@ -69,6 +116,10 @@ class BoardManager:
                 sysbuild=config['zephyr'].get('sysbuild', False),
             )
         
+        # Parse features and capabilities
+        features = config.get('features', [])
+        capabilities = config.get('capabilities', {})
+        
         return Board(
             board_id=board_id,
             type=config.get('type', 'stm32'),
@@ -81,6 +132,8 @@ class BoardManager:
             serial=serial,
             zephyr=zephyr_config,
             supported_frameworks=config.get('supported_frameworks', []),
+            features=features,
+            capabilities=capabilities,
             status=BoardState.OFFLINE,
         )
     
@@ -245,67 +298,197 @@ class BoardManager:
     
     def get_board(self, board_id: str) -> Optional[Board]:
         """Get a board by ID."""
-        return self.boards.get(board_id)
+        # Return a copy to prevent external mutation
+        board = self.boards.get(board_id)
+        if board is None:
+            return None
+        # Return the board object (callers should treat it as read-only)
+        return board
     
     def list_boards(self, only_available: bool = False) -> List[Board]:
-        """List all boards, optionally filtering to available only."""
+        """List all boards, optionally filtering to available only.
+        
+        Note: This is eventually consistent. For strict consistency,
+        use list_boards_async() which acquires the lock.
+        """
         boards = list(self.boards.values())
         if only_available:
             boards = [b for b in boards if b.status == BoardState.AVAILABLE]
         return boards
     
-    def reserve_board(self, board_id: str, user: str, timeout_minutes: int = 30) -> bool:
+    async def list_boards_async(self, only_available: bool = False) -> List[Board]:
+        """List all boards with proper locking for consistency."""
+        async with self._lock:
+            boards = list(self.boards.values())
+            if only_available:
+                boards = [b for b in boards if b.status == BoardState.AVAILABLE]
+            return boards
+    
+    async def reserve_board(self, board_id: str, user: str, timeout_minutes: int = 30) -> bool:
         """Reserve a board for exclusive use."""
-        board = self.boards.get(board_id)
-        if not board:
-            return False
-        
-        if board.status not in (BoardState.AVAILABLE, BoardState.OFFLINE):
-            return False
-        
-        old_status = board.status
-        board.status = BoardState.RESERVED
-        board.reserved_by = user
-        board.reserved_until = datetime.now() + timedelta(minutes=timeout_minutes)
-        
-        self._notify_state_change(board_id, old_status, board.status)
-        logger.info(f"Board {board_id} reserved by {user} until {board.reserved_until}")
-        return True
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if not board:
+                logger.warning(f"reserve_board: Board {board_id} not found")
+                return False
+
+            # CRITICAL: Board must be AVAILABLE to reserve
+            # We explicitly check this rather than relying on transition validation
+            # to prevent race conditions where multiple agents see AVAILABLE simultaneously
+            if board.status != BoardState.AVAILABLE:
+                logger.warning(f"reserve_board: Board {board_id} is not available (status: {board.status.name})")
+                return False
+
+            # Also check transition validity
+            if not self._is_valid_transition(board.status, BoardState.RESERVED):
+                logger.warning(f"reserve_board: Invalid transition from {board.status.name} to RESERVED for {board_id}")
+                return False
+
+            old_status = board.status
+            board.status = BoardState.RESERVED
+            board.reserved_by = user
+            board.reserved_until = datetime.now() + timedelta(minutes=timeout_minutes)
+
+            self._notify_state_change(board_id, old_status, board.status)
+            logger.info(f"Board {board_id} reserved by {user} until {board.reserved_until}")
+            return True
     
-    def release_board(self, board_id: str, user: str) -> bool:
+    def _is_valid_transition(self, from_state: BoardState, to_state: BoardState) -> bool:
+        """Check if a state transition is valid."""
+        if from_state == to_state:
+            return True  # Same state is always valid
+        return (from_state, to_state) in self.VALID_TRANSITIONS
+    
+    async def release_board(self, board_id: str, user: str) -> bool:
         """Release a reserved board."""
-        board = self.boards.get(board_id)
-        if not board:
-            return False
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if not board:
+                logger.warning(f"release_board: Board {board_id} not found")
+                return False
+            
+            if board.status != BoardState.RESERVED:
+                logger.warning(f"release_board: Board {board_id} is not RESERVED (status: {board.status.name})")
+                return False
+            
+            if board.reserved_by != user:
+                logger.warning(f"User {user} tried to release board reserved by {board.reserved_by}")
+                return False
+            
+            old_status = board.status
+            board.status = BoardState.AVAILABLE
+            board.reserved_by = None
+            board.reserved_until = None
+            
+            self._notify_state_change(board_id, old_status, board.status)
+            logger.info(f"Board {board_id} released by {user}")
+            
+            # Check queue for next waiting request (will acquire lock again, but that's OK)
+            # We need to release the lock first to avoid deadlock
+            pass
         
-        if board.status != BoardState.RESERVED:
-            return False
+        # Outside the lock, check queue
+        if self._queue:
+            await self._check_queue_for_board(board_id)
         
-        if board.reserved_by != user:
-            logger.warning(f"User {user} tried to release board reserved by {board.reserved_by}")
-            return False
-        
-        old_status = board.status
-        board.status = BoardState.AVAILABLE
-        board.reserved_by = None
-        board.reserved_until = None
-        
-        self._notify_state_change(board_id, old_status, board.status)
-        logger.info(f"Board {board_id} released by {user}")
         return True
     
-    def update_board_state(self, board_id: str, new_state: BoardState) -> bool:
+    async def _check_queue_for_board(self, board_id: str):
+        """Check queue and assign board to next waiting request atomically."""
+        entry = None
+
+        # Step 1: Find matching entry while holding lock
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if not board or board.status != BoardState.AVAILABLE:
+                logger.debug(f"_check_queue_for_board: Board {board_id} not available (status: {board.status if board else 'not found'})")
+                return
+
+            # Use feature-based matching to find best match
+            entry = self._queue.find_best_match(
+                board_type=board.type,
+                board_id=board_id,
+                board_features=board.get_features_set(),
+                board_capabilities=board.get_capabilities_dict()
+            )
+
+            if not entry:
+                logger.debug(f"_check_queue_for_board: No matching queue entry for {board_id}")
+                return
+
+            # CRITICAL: Mark board as RESERVED immediately to prevent race conditions
+            # We use a temporary holder until the queue confirms assignment
+            old_status = board.status
+            board.status = BoardState.RESERVED
+            board.reserved_by = f"assigning:{entry.queue_id}"
+            board.reserved_until = datetime.now() + timedelta(minutes=entry.estimated_minutes)
+
+        # Step 2: Outside the lock, assign to queue (this may trigger callbacks)
+        # We don't hold the lock here to avoid deadlock with callback
+        assign_success = await self._queue.assign_board(entry.queue_id, board_id)
+
+        if not assign_success:
+            # Assignment failed - release the board back to available
+            async with self._lock:
+                board = self.boards.get(board_id)
+                if board and board.reserved_by == f"assigning:{entry.queue_id}":
+                    board.status = BoardState.AVAILABLE
+                    board.reserved_by = None
+                    board.reserved_until = None
+            logger.warning(f"_check_queue_for_board: Failed to assign {board_id} to queue entry {entry.queue_id}, board released")
+            return
+
+        # Step 3: Update reservation to final agent
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if board and board.reserved_by == f"assigning:{entry.queue_id}":
+                old_status = board.status
+                board.reserved_by = entry.agent_id
+                self._notify_state_change(board_id, BoardState.AVAILABLE, board.status)
+                logger.info(f"Board {board_id} auto-assigned and reserved for queue entry {entry.queue_id} (agent: {entry.agent_id})")
+            else:
+                logger.warning(f"_check_queue_for_board: Board {board_id} state changed during assignment")
+    
+    async def _on_board_assigned(self, queue_id: str, board_id: str):
+        """Callback when a board is assigned from the queue.
+        
+        Note: The board is already reserved in _check_queue_for_board() to prevent
+        race conditions. This callback is for notification/logging purposes only.
+        """
+        entry = self._queue.get_entry(queue_id)
+        if not entry:
+            return
+        
+        # Verify the board is reserved for this entry
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if board and board.status == BoardState.RESERVED:
+                if board.reserved_by == entry.agent_id:
+                    logger.info(f"Verified {board_id} reserved for {entry.agent_id} from queue")
+                else:
+                    logger.warning(f"Board {board_id} reserved by {board.reserved_by}, expected {entry.agent_id}")
+            else:
+                logger.warning(f"Board {board_id} not in RESERVED state when assigned from queue")
+    
+    async def update_board_state(self, board_id: str, new_state: BoardState) -> bool:
         """Update a board's state (for internal use)."""
-        board = self.boards.get(board_id)
-        if not board:
-            return False
-        
-        old_state = board.status
-        board.status = new_state
-        board.last_seen = datetime.now()
-        
-        self._notify_state_change(board_id, old_state, new_state)
-        return True
+        async with self._lock:
+            board = self.boards.get(board_id)
+            if not board:
+                return False
+            
+            # Validate state transition
+            if not self._is_valid_transition(board.status, new_state):
+                logger.warning(f"update_board_state: Invalid transition from {board.status.name} to {new_state.name} for {board_id}")
+                return False
+            
+            old_state = board.status
+            board.status = new_state
+            board.last_seen = datetime.now()
+            
+            self._notify_state_change(board_id, old_state, new_state)
+            logger.debug(f"Board {board_id} state updated: {old_state.name} -> {new_state.name}")
+            return True
     
     def register_state_callback(self, callback: Callable[[str, BoardState, BoardState], None]):
         """Register a callback for board state changes."""
@@ -326,20 +509,28 @@ class BoardManager:
             return None
         return board.to_dict()
     
-    def check_expired_reservations(self) -> List[str]:
+    async def check_expired_reservations(self) -> List[str]:
         """Check and release expired reservations. Returns list of released board IDs."""
         released = []
         now = datetime.now()
         
-        for board_id, board in self.boards.items():
-            if board.status == BoardState.RESERVED and board.reserved_until:
-                if now > board.reserved_until:
-                    logger.info(f"Reservation expired for {board_id}")
-                    old_status = board.status
-                    board.status = BoardState.AVAILABLE
-                    board.reserved_by = None
-                    board.reserved_until = None
-                    self._notify_state_change(board_id, old_status, board.status)
-                    released.append(board_id)
+        async with self._lock:
+            expired_boards = []
+            for board_id, board in self.boards.items():
+                if board.status == BoardState.RESERVED and board.reserved_until:
+                    if now > board.reserved_until:
+                        expired_boards.append(board_id)
+                        logger.info(f"Reservation expired for {board_id}")
+                        old_status = board.status
+                        board.status = BoardState.AVAILABLE
+                        board.reserved_by = None
+                        board.reserved_until = None
+                        self._notify_state_change(board_id, old_status, board.status)
+                        released.append(board_id)
+        
+        # Check queue for expired boards (outside the lock)
+        if self._queue:
+            for board_id in expired_boards:
+                await self._check_queue_for_board(board_id)
         
         return released

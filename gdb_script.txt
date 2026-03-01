@@ -1,0 +1,25 @@
+# GDB script for H755 debugging
+target remote localhost:3333
+set pagination off
+echo === Connected to H755 ===\n
+# Try to halt the target
+mon halt
+
+# Set a breakpoint at Reset_Handler (typical starting point)
+break *0x08000000
+
+# Read registers
+info registers
+
+# Continue execution
+continue
+
+# Wait a moment, then interrupt
+shell sleep 2
+
+# Try to interrupt and read registers again
+Ctrl-C
+info registers
+
+# Quit
+quit

@@ -4,7 +4,7 @@
 boards:
   # STM32 Nucleo H755ZI-Q - Board 1
   nucleo-h755zi-q-01:
-    type: stm32
+    type: h755
     model: nucleo-h755zi-q
     mcu: STM32H755ZI
     description: "Primary dual-core development board (Cortex-M7/M4)"
@@ -12,6 +12,23 @@ boards:
     # Memory specs (KB)
     flash_size: 2048  # 2MB dual-bank
     ram_size: 1024    # 1MB SRAM
+    
+    # Feature-based matching support
+    features:
+      - ethernet
+      - usb
+      - dual_core
+      - sd_card
+      - can
+      - spi
+      - i2c
+      - adc
+      - dac
+    capabilities:
+      ram_kb: 1024
+      flash_kb: 2048
+      cpu_mhz: 480
+      cores: 2
     
     # Debug interface
     debugger:
@@ -40,13 +57,29 @@ boards:
 
   # STM32 Nucleo H755ZI-Q - Board 2
   nucleo-h755zi-q-02:
-    type: stm32
+    type: h755
     model: nucleo-h755zi-q
     mcu: STM32H755ZI
     description: "Secondary dual-core testing/CI board"
     
     flash_size: 2048
     ram_size: 1024
+    
+    features:
+      - ethernet
+      - usb
+      - dual_core
+      - sd_card
+      - can
+      - spi
+      - i2c
+      - adc
+      - dac
+    capabilities:
+      ram_kb: 1024
+      flash_kb: 2048
+      cpu_mhz: 480
+      cores: 2
     
     debugger:
       type: stlink-v3
@@ -76,6 +109,15 @@ boards:
     description: "Primary development board (MOCK)"
     flash_size: 512
     ram_size: 96
+    features:
+      - usb
+      - spi
+      - i2c
+      - adc
+    capabilities:
+      ram_kb: 96
+      flash_kb: 512
+      cpu_mhz: 84
     debugger:
       type: cmsis-dap
       transport: swd
@@ -98,6 +140,15 @@ boards:
     description: "Testing/CI board (MOCK)"
     flash_size: 512
     ram_size: 96
+    features:
+      - usb
+      - spi
+      - i2c
+      - adc
+    capabilities:
+      ram_kb: 96
+      flash_kb: 512
+      cpu_mhz: 84
     debugger:
       type: cmsis-dap
       transport: swd
@@ -110,6 +161,40 @@ boards:
       - baremetal
     zephyr:
       board_name: nucleo_f401re
+    status: offline
+
+  # Example ESP32 board configuration
+  esp32-devkit-v4:
+    type: esp32
+    model: ESP32-DevKitC
+    mcu: ESP32-WROOM-32
+    description: "WiFi/BLE development board"
+    flash_size: 4096
+    ram_size: 520
+    features:
+      - wifi
+      - bluetooth
+      - dual_core
+      - spi
+      - i2c
+      - adc
+      - dac
+    capabilities:
+      ram_kb: 520
+      flash_kb: 4096
+      cpu_mhz: 240
+      cores: 2
+    debugger:
+      type: esp-prog
+      transport: jtag
+    serial:
+      port: /dev/ttyUSB0
+      baud: 115200
+    supported_frameworks:
+      - zephyr
+      - arduino
+      - esp-idf
+      - platformio
     status: offline
 
 # Server settings

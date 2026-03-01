@@ -5,10 +5,15 @@ __author__ = "MCP Board Farm Contributors"
 
 from .models import Board, BoardState, BuildConfig
 from .board_manager import BoardManager
+from .board_queue import BoardQueue, QueueEntry, QueueStatus, get_queue
 
 __all__ = [
     "Board",
     "BoardState",
     "BuildConfig",
     "BoardManager",
+    "BoardQueue",
+    "QueueEntry",
+    "QueueStatus",
+    "get_queue",
 ]

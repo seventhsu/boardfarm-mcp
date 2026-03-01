@@ -27,6 +27,7 @@ from .models import (
     LogEntry, ServerConfig
 )
 from .board_manager import BoardManager
+from .board_queue import BoardQueue, QueueStatus, get_queue
 from .builder import BuildManager, ZephyrBuilder, MockBuilder
 from .build_providers import (
     BuildRequest, BuildProviderFactory, BuildStatus,
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 class ServerState:
     def __init__(self):
         self.board_manager: Optional[BoardManager] = None
+        self.board_queue: Optional[BoardQueue] = None
         self.build_manager: Optional[BuildManager] = None
         self.builder: Optional[ZephyrBuilder] = None  # Legacy
         self.flasher: Optional[OpenOCDFlasher] = None
@@ -80,9 +82,16 @@ async def app_lifespan(server: FastMCP):
     logger.info("Starting MCP Board Farm server...")
     state = ServerState()
     config_path = os.environ.get('BOARDFARM_CONFIG', 'config/boards.yaml')
-    state.board_manager = BoardManager(config_path)
+    
+    # Initialize board queue first
+    state.board_queue = get_queue()
+    await state.board_queue.start()
+    
+    # Initialize board manager and connect to queue
+    state.board_manager = BoardManager(config_path, board_queue=state.board_queue)
     state.board_manager.load_config()
     state.board_manager.detect_boards()
+    state.board_manager.set_queue(state.board_queue)
     
     # Initialize new build manager with provider configuration
     build_providers_config = _load_build_config(config_path)
@@ -98,6 +107,8 @@ async def app_lifespan(server: FastMCP):
     logger.info("Shutting down MCP Board Farm server...")
     if state.monitor:
         await state.monitor.close_all()
+    if state.board_queue:
+        await state.board_queue.stop()
 
 
 mcp._lifespan = app_lifespan
@@ -196,7 +207,7 @@ async def build_firmware(
     logger.info(f"Building {target} for {board_id} (framework: {framework})")
     
     old_status = board.status
-    bm.update_board_state(board_id, BoardState.BUILDING)
+    await bm.update_board_state(board_id, BoardState.BUILDING)
     
     try:
         # Use new build manager
@@ -229,7 +240,7 @@ async def build_firmware(
             "result": result,
         }
         
-        bm.update_board_state(board_id, old_status)
+        await bm.update_board_state(board_id, old_status)
         
         # Format response
         lines = [
@@ -264,7 +275,7 @@ async def build_firmware(
         return "\n".join(lines)
         
     except Exception as e:
-        bm.update_board_state(board_id, old_status)
+        await bm.update_board_state(board_id, old_status)
         logger.exception(f"Build failed: {e}")
         return f"Error: Build failed with exception: {e}"
 
@@ -368,6 +379,510 @@ async def list_build_targets(ctx: Context, board_id: Optional[str] = None,
                     lines.append(f"  ... and {len(targets) - 10} more")
             except Exception as e:
                 lines.append(f"\n{fw}: Error loading targets - {e}")
+    
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def queue_for_board(
+    ctx: Context,
+    board_type: str,
+    priority: int,
+    estimated_minutes: int,
+    agent_id: str,
+    job_description: str,
+    required_features: Optional[List[str]] = None,
+    optional_features: Optional[List[str]] = None,
+    min_capabilities: Optional[Dict[str, Any]] = None,
+    auto_accept: bool = False
+) -> str:
+    """Queue for a board reservation with priority and feature matching.
+    
+    This adds your request to the board queue. When a matching board becomes
+    available, it will be assigned based on priority and wait time.
+    
+    Args:
+        board_type: Type of board needed (e.g., "h755", "esp32", "nucleo")
+        priority: Priority level 1-5 (1 is highest priority)
+        estimated_minutes: How long you need the board (max 8 hours = 480 min)
+        agent_id: Your agent identifier
+        job_description: Description of what you're testing/building
+        required_features: List of features the board MUST have (e.g., ["ethernet", "can"])
+        optional_features: Nice-to-have features for better matching
+        min_capabilities: Minimum specs required (e.g., {"ram_kb": 512})
+        auto_accept: If True, automatically reserve the board when available
+        
+    Returns:
+        Queue ID for tracking your request
+        
+    Example:
+        queue_for_board(
+            board_type="h755",
+            priority=2,
+            estimated_minutes=120,
+            agent_id="sabine-42",
+            job_description="CH57x BLE driver testing",
+            required_features=["ethernet", "dual_core"],
+            min_capabilities={"ram_kb": 512}
+        )
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    queue = state.board_queue
+    
+    queue_id = queue.add_request(
+        board_type=board_type,
+        priority=priority,
+        estimated_minutes=estimated_minutes,
+        agent_id=agent_id,
+        job_description=job_description,
+        required_features=required_features or [],
+        optional_features=optional_features or [],
+        min_capabilities=min_capabilities or {},
+        auto_accept=auto_accept
+    )
+    
+    position, _, desc = queue.get_position(queue_id)
+    
+    return f"Queue ID: {queue_id}\nPosition: {desc}\nStatus: PENDING"
+
+
+@mcp.tool()
+async def get_queue_position(ctx: Context, queue_id: str) -> str:
+    """Get the current position of a queue request.
+    
+    Args:
+        queue_id: The queue ID returned by queue_for_board
+        
+    Returns:
+        Queue position information
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    queue = state.board_queue
+    
+    entry = queue.get_entry(queue_id)
+    if not entry:
+        return f"Error: Queue ID '{queue_id}' not found."
+    
+    position, same_priority, desc = queue.get_position(queue_id)
+    
+    lines = [
+        f"Queue ID: {queue_id}",
+        f"Board Type: {entry.board_type}",
+        f"Priority: {entry.priority}",
+        f"Status: {entry.status.name}",
+        f"Position: {desc}",
+        f"Requested: {entry.requested_at.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Estimated Duration: {entry.estimated_minutes} minutes",
+        f"Job: {entry.job_description}",
+    ]
+    
+    if entry.status == QueueStatus.ASSIGNED and entry.assigned_board_id:
+        lines.append(f"\n✓ Board Assigned: {entry.assigned_board_id}")
+    
+    if entry.required_features:
+        lines.append(f"\nRequired Features: {', '.join(entry.required_features)}")
+    if entry.optional_features:
+        lines.append(f"Optional Features: {', '.join(entry.optional_features)}")
+    
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def cancel_queue_request(ctx: Context, queue_id: str, agent_id: str) -> str:
+    """Cancel a pending queue request.
+    
+    Args:
+        queue_id: The queue ID to cancel
+        agent_id: Your agent ID (must match the request)
+        
+    Returns:
+        Success or error message
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    queue = state.board_queue
+    
+    entry = queue.get_entry(queue_id)
+    if not entry:
+        return f"Error: Queue ID '{queue_id}' not found."
+    
+    if entry.agent_id != agent_id:
+        return f"Error: Agent ID mismatch. This request belongs to {entry.agent_id}."
+    
+    if entry.status not in (QueueStatus.PENDING, QueueStatus.ASSIGNED):
+        return f"Error: Cannot cancel - status is {entry.status.name}"
+    
+    success = queue.cancel_request(queue_id, agent_id)
+    
+    if success:
+        return f"Queue request {queue_id} cancelled successfully."
+    else:
+        return f"Failed to cancel queue request {queue_id}."
+
+
+@mcp.tool()
+async def list_queue(
+    ctx: Context,
+    board_type: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    show_completed: bool = False
+) -> str:
+    """List all queued board requests.
+    
+    Args:
+        board_type: Filter by board type
+        agent_id: Filter by agent ID
+        show_completed: Include completed/cancelled requests
+        
+    Returns:
+        Formatted queue listing
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    queue = state.board_queue
+    
+    # Get pending entries
+    pending = queue.list_queue(status=QueueStatus.PENDING, board_type=board_type, agent_id=agent_id)
+    assigned = queue.list_queue(status=QueueStatus.ASSIGNED, board_type=board_type, agent_id=agent_id)
+    
+    lines = ["Board Queue Status", "=" * 70]
+    
+    # Summary
+    summary = queue.get_queue_summary()
+    lines.append(f"\nSummary: {summary['pending']} pending, {summary['assigned']} assigned")
+    
+    # Pending requests
+    if pending:
+        lines.append(f"\n📋 Pending Requests ({len(pending)}):")
+        lines.append("-" * 70)
+        for i, entry in enumerate(pending[:20], 1):  # Limit to 20
+            pos, _, _ = queue.get_position(entry.queue_id)
+            lines.append(f"\n{i}. [{entry.priority}] {entry.board_type} - {entry.agent_id}")
+            lines.append(f"   Queue ID: {entry.queue_id}")
+            lines.append(f"   Job: {entry.job_description}")
+            lines.append(f"   Wait: {pos} in queue, requested {entry.requested_at.strftime('%H:%M')}")
+            if entry.required_features:
+                lines.append(f"   Required: {', '.join(entry.required_features)}")
+        if len(pending) > 20:
+            lines.append(f"\n... and {len(pending) - 20} more")
+    else:
+        lines.append("\n📋 No pending requests")
+    
+    # Assigned requests
+    if assigned:
+        lines.append(f"\n🔒 Assigned Boards ({len(assigned)}):")
+        lines.append("-" * 70)
+        for entry in assigned:
+            lines.append(f"\n• {entry.assigned_board_id} → {entry.agent_id}")
+            lines.append(f"  Job: {entry.job_description}")
+            if entry.assigned_at:
+                lines.append(f"  Assigned at: {entry.assigned_at.strftime('%H:%M:%S')}")
+    
+    # Show completed if requested
+    if show_completed:
+        completed = queue.list_queue(status=QueueStatus.COMPLETED, board_type=board_type, agent_id=agent_id)
+        cancelled = queue.list_queue(status=QueueStatus.CANCELLED, board_type=board_type, agent_id=agent_id)
+        
+        if completed:
+            lines.append(f"\n✓ Completed ({len(completed)}):")
+            for entry in completed[:10]:
+                lines.append(f"  {entry.queue_id}: {entry.board_type} - {entry.job_description}")
+        
+        if cancelled:
+            lines.append(f"\n✗ Cancelled ({len(cancelled)}):")
+            for entry in cancelled[:10]:
+                lines.append(f"  {entry.queue_id}: {entry.board_type} - {entry.job_description}")
+    
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def reserve_board_with_timeout(
+    ctx: Context,
+    board_id: str,
+    agent_id: str,
+    minutes: int = 30
+) -> str:
+    """Reserve a specific board with custom timeout.
+    
+    Args:
+        board_id: The board to reserve (e.g., "nucleo-h755zi-q-01")
+        agent_id: Your agent identifier
+        minutes: Reservation duration (1-480 minutes, default 30)
+        
+    Returns:
+        Reservation confirmation or error
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    bm = state.board_manager
+    
+    board = bm.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+    
+    # Limit timeout
+    minutes = max(1, min(480, minutes))
+    
+    success = await bm.reserve_board(board_id, agent_id, minutes)
+    
+    if success:
+        until = datetime.now() + __import__('datetime').timedelta(minutes=minutes)
+        return (
+            f"✓ Board '{board_id}' reserved successfully!\n"
+            f"  Reserved by: {agent_id}\n"
+            f"  Duration: {minutes} minutes\n"
+            f"  Expires at: {until.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+    else:
+        if board.status == BoardState.RESERVED:
+            return f"Error: Board '{board_id}' is already reserved by {board.reserved_by}."
+        elif board.status == BoardState.OFFLINE:
+            return f"Error: Board '{board_id}' is offline."
+        else:
+            return f"Error: Cannot reserve board '{board_id}' (status: {board.status.name})."
+
+
+@mcp.tool()
+async def release_board(ctx: Context, board_id: str, agent_id: str) -> str:
+    """Release a reserved board.
+    
+    Args:
+        board_id: The board to release
+        agent_id: Your agent identifier (must match reservation)
+        
+    Returns:
+        Success or error message
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    bm = state.board_manager
+    
+    board = bm.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+    
+    if board.status != BoardState.RESERVED:
+        return f"Error: Board '{board_id}' is not reserved (status: {board.status.name})."
+    
+    if board.reserved_by != agent_id:
+        return f"Error: Board reserved by {board.reserved_by}, not {agent_id}."
+    
+    success = await bm.release_board(board_id, agent_id)
+    
+    if success:
+        # Check if board was assigned from queue
+        return f"✓ Board '{board_id}' released successfully."
+    else:
+        return f"Error: Failed to release board '{board_id}'."
+
+
+@mcp.tool()
+async def analyze_fault_arm_cortex_m(ctx: Context, board_id: str) -> str:
+    """Analyze ARM Cortex-M fault status registers.
+    
+    Reads and decodes CFSR (Configurable Fault Status Register),
+    HFSR (HardFault Status Register), MMFAR (MemManage Address),
+    and BFAR (BusFault Address) to diagnose the cause of a HardFault
+    or other exception.
+    
+    Args:
+        board_id: The board to analyze (must have active GDB session)
+        
+    Returns:
+        Structured fault analysis with decoded bit fields
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    debugger = dm.get_debugger(board_id)
+    if not debugger:
+        return f"Error: No active GDB session for board '{board_id}'. Start a debug session first."
+    
+    # ARM Cortex-M fault register addresses
+    CFSR_ADDR = 0xE000ED28
+    HFSR_ADDR = 0xE000ED2C
+    MMFAR_ADDR = 0xE000ED34
+    BFAR_ADDR = 0xE000ED38
+    
+    try:
+        # Read fault registers via GDB
+        cfsr_result = await debugger.read_memory(CFSR_ADDR, 4)
+        hfsr_result = await debugger.read_memory(HFSR_ADDR, 4)
+        mmfar_result = await debugger.read_memory(MMFAR_ADDR, 4)
+        bfar_result = await debugger.read_memory(BFAR_ADDR, 4)
+        
+        if not cfsr_result.success:
+            return f"Error reading fault registers: {cfsr_result.message}"
+        
+        # Extract values (little-endian)
+        cfsr = int.from_bytes(cfsr_result.data.get('data', [0, 0, 0, 0]), 'little')
+        hfsr = int.from_bytes(hfsr_result.data.get('data', [0, 0, 0, 0]), 'little')
+        mmfar = int.from_bytes(mmfar_result.data.get('data', [0, 0, 0, 0]), 'little')
+        bfar = int.from_bytes(bfar_result.data.get('data', [0, 0, 0, 0]), 'little')
+        
+        # Parse CFSR subregisters
+        mmfsr = cfsr & 0xFF           # MemManage Fault Status
+        bfsr = (cfsr >> 8) & 0xFF     # BusFault Status
+        ufsr = (cfsr >> 16) & 0xFFFF  # UsageFault Status
+        
+        # Build analysis
+        lines = ["=" * 50, "ARM CORTEX-M FAULT ANALYSIS", "=" * 50, ""]
+        lines.append(f"Raw Register Values:")
+        lines.append(f"  CFSR: 0x{cfsr:08X}")
+        lines.append(f"  HFSR: 0x{hfsr:08X}")
+        lines.append(f"  MMFAR: 0x{mmfar:08X}")
+        lines.append(f"  BFAR: 0x{bfar:08X}")
+        lines.append("")
+        
+        faults_found = []
+        
+        # Decode MMFSR (MemManage Fault)
+        if mmfsr:
+            lines.append("MemManage Fault (MMFSR):")
+            if mmfsr & 0x01:
+                faults_found.append("IACCVIOL: Instruction access violation")
+            if mmfsr & 0x02:
+                faults_found.append("DACCVIOL: Data access violation")
+                if mmfsr & 0x80:
+                    lines.append(f"  -> MMFAR valid: 0x{mmfar:08X}")
+            if mmfsr & 0x08:
+                faults_found.append("MUNSTKERR: MemManage fault on unstacking")
+            if mmfsr & 0x10:
+                faults_found.append("MSTKERR: MemManage fault on stacking")
+            if mmfsr & 0x20:
+                faults_found.append("MLSPERR: MemManage fault during FP lazy state preservation")
+            for fault in faults_found:
+                lines.append(f"  ✗ {fault}")
+            lines.append("")
+        
+        # Decode BFSR (BusFault)
+        if bfsr:
+            lines.append("BusFault (BFSR):")
+            bus_faults = []
+            if bfsr & 0x01:
+                bus_faults.append("IBUSERR: Instruction bus error")
+            if bfsr & 0x02:
+                bus_faults.append("PRECISERR: Precise data bus error")
+                if bfsr & 0x80:
+                    lines.append(f"  -> BFAR valid: 0x{bfar:08X}")
+            if bfsr & 0x04:
+                bus_faults.append("IMPRECISERR: Imprecise data bus error")
+            if bfsr & 0x08:
+                bus_faults.append("UNSTKERR: BusFault on unstacking")
+            if bfsr & 0x10:
+                bus_faults.append("STKERR: BusFault on stacking")
+            if bfsr & 0x20:
+                bus_faults.append("LSPERR: BusFault during FP lazy state preservation")
+            for fault in bus_faults:
+                lines.append(f"  ✗ {fault}")
+            lines.append("")
+        
+        # Decode UFSR (UsageFault)
+        if ufsr:
+            lines.append("UsageFault (UFSR):")
+            usage_faults = []
+            if ufsr & 0x0001:
+                usage_faults.append("UNDEFINSTR: Undefined instruction")
+            if ufsr & 0x0002:
+                usage_faults.append("INVSTATE: Invalid state ( Thumb mode violation)")
+            if ufsr & 0x0004:
+                usage_faults.append("INVPC: Invalid PC (bad EXC_RETURN value)")
+            if ufsr & 0x0008:
+                usage_faults.append("NOCP: No coprocessor (accessed disabled FPU)")
+            if ufsr & 0x0100:
+                usage_faults.append("UNALIGNED: Unaligned access")
+            if ufsr & 0x0200:
+                usage_faults.append("DIVBYZERO: Divide by zero")
+            for fault in usage_faults:
+                lines.append(f"  ✗ {fault}")
+            lines.append("")
+        
+        # Decode HFSR
+        if hfsr:
+            lines.append("HardFault (HFSR):")
+            if hfsr & 0x40000000:
+                lines.append("  ✗ FORCED: Escalated from configurable fault (maskable)")
+            if hfsr & 0x80000000:
+                lines.append("  ✗ DEBUGEVT: Debug event occurred")
+            if hfsr & 0x00000002:
+                lines.append("  ✗ VECTBL: Vector table read fault")
+            lines.append("")
+        
+        # Summary
+        if not faults_found and not mmfsr and not bfsr and not ufsr and not hfsr:
+            lines.append("No active fault flags detected.")
+            lines.append("Possible causes:")
+            lines.append("  - Fault was cleared (read-on-clear registers)")
+            lines.append("  - Check stacked PC/LR for faulting location")
+        else:
+            lines.append("=" * 50)
+            lines.append("DIAGNOSIS SUMMARY")
+            lines.append("=" * 50)
+            
+            if mmfsr:
+                lines.append("→ MemManage Fault: Memory protection violation")
+                lines.append("  Check MPU configuration and memory access permissions")
+            if bfsr:
+                lines.append("→ BusFault: External bus error or invalid address")
+                lines.append("  Check address validity and peripheral state")
+            if ufsr:
+                lines.append("→ UsageFault: Program execution error")
+                lines.append("  Check instruction sequence and register values")
+            if hfsr & 0x40000000:
+                lines.append("→ HardFault (escalated): Configurable fault was masked")
+                lines.append("  Check fault handler configuration in SHCSR")
+        
+        lines.append("")
+        lines.append("Recommended Actions:")
+        lines.append("1. Read stacked PC (R14/LR) to find faulting instruction")
+        lines.append("2. Check SP to determine if stack overflow occurred")
+        lines.append("3. Review memory map for accessed addresses")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        return f"Error analyzing fault: {str(e)}"
+
+
+@mcp.tool()
+async def get_board_features(ctx: Context, board_id: str) -> str:
+    """Get features and capabilities of a board.
+    
+    Args:
+        board_id: The board to query
+        
+    Returns:
+        Board features and capabilities
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    bm = state.board_manager
+    
+    board = bm.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+    
+    lines = [
+        f"Board: {board.board_id}",
+        f"Type: {board.type}",
+        f"Model: {board.model}",
+        f"MCU: {board.mcu}",
+        "",
+        "Features:",
+    ]
+    
+    if board.features:
+        for feat in board.features:
+            lines.append(f"  ✓ {feat}")
+    else:
+        lines.append("  (none defined)")
+    
+    lines.append("\nCapabilities:")
+    caps = board.get_capabilities_dict()
+    for key, value in caps.items():
+        lines.append(f"  {key}: {value}")
+    
+    if board.supported_frameworks:
+        lines.append(f"\nSupported Frameworks: {', '.join(board.supported_frameworks)}")
     
     return "\n".join(lines)
 
