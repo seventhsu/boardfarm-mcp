@@ -201,6 +201,138 @@ class OpenOCDFlasher:
             return False
 
 
+class PyOCDFlasher:
+    """Flasher using PyOCD - manufacturer agnostic."""
+    
+    def __init__(self):
+        self.timeout_seconds = 60
+    
+    def flash(self, board: Board, build_result: BuildResult,
+              core: Optional[str] = None) -> FlashResult:
+        """Flash firmware using PyOCD."""
+        start_time = time.time()
+        
+        # Determine target type
+        target = self._get_target(board)
+        
+        # Get file to flash
+        if build_result.bin_path and Path(build_result.bin_path).exists():
+            flash_file = build_result.bin_path
+            file_format = "bin"
+            address = "0x08000000"
+        elif build_result.hex_path and Path(build_result.hex_path).exists():
+            flash_file = build_result.hex_path
+            file_format = "hex"
+            address = None
+        elif build_result.elf_path and Path(build_result.elf_path).exists():
+            flash_file = build_result.elf_path
+            file_format = "elf"
+            address = None
+        else:
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message="No flashable file found (BIN, HEX, or ELF)"
+            )
+        
+        logger.info(f"Flashing {build_result.build_id} to {board.board_id} using PyOCD")
+        
+        # Build pyocd command
+        cmd = ['pyocd', 'flash', '--target', target]
+        
+        # Add core selection for H7 dual-core
+        if core and 'h7' in board.mcu.lower():
+            ap = 0 if core.upper() == 'M7' else 1
+            cmd.extend(['--apid', str(ap)])
+        
+        # Add format-specific options
+        if file_format == "bin":
+            cmd.extend(['--base-address', address])
+        
+        cmd.append(flash_file)
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds
+            )
+            
+            success = result.returncode == 0
+            duration = time.time() - start_time
+            
+            return FlashResult(
+                success=success,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                bytes_written=Path(flash_file).stat().st_size if success else 0,
+                verify_passed=success,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                duration_seconds=duration,
+                error_message=result.stderr if not success else None
+            )
+            
+        except subprocess.TimeoutExpired:
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message=f"Flash timeout after {self.timeout_seconds}s",
+                duration_seconds=time.time() - start_time
+            )
+        except FileNotFoundError:
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message="pyocd not found. Install with: pip install pyocd"
+            )
+    
+    def _get_target(self, board: Board) -> str:
+        """Map board MCU to PyOCD target."""
+        target_map = {
+            'STM32H755ZI': 'stm32h755zitx',
+            'STM32H755': 'stm32h755zitx',
+            'STM32H743ZI': 'stm32h743zitx',
+            'STM32H743': 'stm32h743zitx',
+            'STM32F401RE': 'stm32f401retx',
+            'STM32F401': 'stm32f401retx',
+            'STM32F407VG': 'stm32f407vgtx',
+            'STM32F407': 'stm32f407vgtx',
+        }
+        
+        mcu = board.mcu.upper()
+        
+        # Direct match
+        if mcu in target_map:
+            return target_map[mcu]
+        
+        # Partial match
+        for mcu_prefix, target in target_map.items():
+            if mcu.startswith(mcu_prefix):
+                return target
+        
+        # Default: use mcu name as target
+        return mcu.lower().replace('stm32', 'stm32')
+    
+    def reset(self, board: Board, reset_type: str = "soft") -> bool:
+        """Reset using PyOCD."""
+        try:
+            target = self._get_target(board)
+            result = subprocess.run(
+                ['pyocd', 'reset', '--target', target, '--method', 'hw'],
+                capture_output=True,
+                timeout=10
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.error(f"Reset failed: {e}")
+            return False
+
+
 class STLinkFlasher:
     """Flasher using ST-Link CLI tools (st-flash)."""
     
