@@ -128,7 +128,7 @@ class OpenOCDFlasher:
         cmd.extend(["-f", interface_cfg])
         
         # Add transport if needed
-        if board.debugger.transport == 'swd':
+        if board.debugger.transport == 'swd' and 'stlink-dap' not in interface_cfg:
             cmd.extend(["-c", "transport select swd"])
         
         # Add target config
@@ -187,7 +187,7 @@ class OpenOCDFlasher:
                                                      self.INTERFACE_CONFIGS.get('cmsis-dap'))
         cmd.extend(["-f", interface_cfg])
         
-        if board.debugger.transport == 'swd':
+        if board.debugger.transport == 'swd' and 'stlink-dap' not in interface_cfg:
             cmd.extend(["-c", "transport select swd"])
         
         target_cfg = self._get_target_config(board)
