@@ -602,21 +602,25 @@ class GDBDebugger:
         return [{'payload': str(result)}]
 
     def _parse_registers(self, result: Any) -> List[Register]:
-        """Parse register info from GDB response."""
+        """Parse register info from GDB response using pygdbmi structured output."""
         registers = []
         
-        result = self._normalize_response(result)
-        for response in result:
-            payload = self._extract_payload(response)
-            lines = payload.split('\n')
-            
-            for line in lines:
-                # Match register lines like: r0             0x20000400       536871936
-                match = re.match(r'^(\w+)\s+(0x[0-9a-fA-F]+)\s+(-?\d+)', line.strip())
-                if match:
-                    name = match.group(1)
-                    value = int(match.group(2), 16)
-                    registers.append(Register(name=name, value=value))
+        # pygdbmi returns structured data - use it directly
+        for response in self._normalize_response(result):
+            if isinstance(response, dict) and 'payload' in response:
+                payload = response['payload']
+                if isinstance(payload, str):
+                    lines = payload.split('\n')
+                    for line in lines:
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[0].isalnum():
+                            try:
+                                name = parts[0]
+                                value_str = parts[1]
+                                value = int(value_str, 16) if value_str.startswith('0x') else int(value_str)
+                                registers.append(Register(name=name, value=value))
+                            except (ValueError, IndexError):
+                                continue
         
         return registers
     
@@ -631,73 +635,66 @@ class GDBDebugger:
         return "unknown"
     
     def _parse_memory_dump(self, result: Any) -> bytes:
-        """Parse memory dump from GDB x command."""
+        """Parse memory dump from GDB x command - simplified."""
         data = []
         
-        result = self._normalize_response(result)
-        for response in result:
+        for response in self._normalize_response(result):
             payload = self._extract_payload(response)
-            lines = payload.split('\n')
-            
-            for line in lines:
-                # Match lines like: 0x20000400:	0x00	0x01	0x02	0x03
-                match = re.match(r'0x[0-9a-fA-F]+:\s+((?:0x[0-9a-fA-F]+\s*)+)', line.strip())
-                if match:
-                    bytes_str = match.group(1).split()
-                    for b in bytes_str:
-                        data.append(int(b, 16))
+            if isinstance(payload, str):
+                for part in payload.split():
+                    try:
+                        if part.startswith('0x'):
+                            data.append(int(part, 16))
+                    except ValueError:
+                        continue
         
         return bytes(data)
     
     def _parse_stack_trace(self, result: Any) -> List[StackFrame]:
-        """Parse stack trace from GDB backtrace."""
+        """Parse stack trace from GDB backtrace - simplified."""
         frames = []
         
-        result = self._normalize_response(result)
-        for response in result:
+        for response in self._normalize_response(result):
             payload = self._extract_payload(response)
-            lines = payload.split('\n')
-            
-            for line in lines:
-                # Match frame lines like: #0  main () at main.c:42
-                match = re.match(r'#(\d+)\s+(?:0x[0-9a-fA-F]+\s+in\s+)?([^\s(]+)(?:\s*\([^)]*\))?\s*(?:at\s+([^:]+):(\d+))?', line.strip())
-                if match:
-                    level = int(match.group(1))
-                    function = match.group(2)
-                    file = match.group(3)
-                    line_num = int(match.group(4)) if match.group(4) else None
-                    
-                    frames.append(StackFrame(
-                        level=level,
-                        function=function,
-                        file=file,
-                        line=line_num
-                    ))
+            if isinstance(payload, str):
+                for line in payload.split('\n'):
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[0].startswith('#'):
+                        try:
+                            level = int(parts[0][1:])
+                            function = parts[2] if len(parts) > 2 and parts[1] == 'in' else parts[1]
+                            file, line_num = None, None
+                            if 'at' in parts:
+                                at_idx = parts.index('at')
+                                if at_idx + 1 < len(parts):
+                                    loc = parts[at_idx + 1]
+                                    if ':' in loc:
+                                        file, line_str = loc.rsplit(':', 1)
+                                        try:
+                                            line_num = int(line_str)
+                                        except ValueError:
+                                            pass
+                            frames.append(StackFrame(level=level, function=function, file=file, line=line_num))
+                        except (ValueError, IndexError):
+                            continue
         
         return frames
     
     def _parse_variables(self, result: Any) -> List[Variable]:
-        """Parse local variables from GDB."""
+        """Parse local variables from GDB - simplified."""
         variables = []
         
-        result = self._normalize_response(result)
-        for response in result:
+        for response in self._normalize_response(result):
             payload = self._extract_payload(response)
-            lines = payload.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if '=' in line:
-                    # Parse variable assignment like: i = 42
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        name = parts[0].strip()
-                        value = parts[1].strip()
-                        variables.append(Variable(
-                            name=name,
-                            type="unknown",
-                            value=value
-                        ))
+            if isinstance(payload, str):
+                for line in payload.split('\n'):
+                    if '=' in line:
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            name = parts[0].strip()
+                            value = parts[1].strip()
+                            if name and value:
+                                variables.append(Variable(name=name, type="unknown", value=value))
         
         return variables
 
