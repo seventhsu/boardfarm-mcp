@@ -2,7 +2,6 @@
 
 import shutil
 from .flasher_impl import PyOCDFlasher, STLinkFlasher, OpenOCDFlasher, MockFlasher
-from .models import FlashResult
 
 class AutoFlasher:
     """Manufacturer-agnostic flasher with automatic fallback."""
@@ -39,6 +38,7 @@ class AutoFlasher:
                 errors.append(f"{flasher.__class__.__name__}: {e}")
         
         # All failed
+        from .models import FlashResult
         return FlashResult(
             success=False,
             board_id=board.board_id,
