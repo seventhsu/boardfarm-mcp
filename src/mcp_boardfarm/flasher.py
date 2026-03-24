@@ -24,7 +24,7 @@ class OpenOCDFlasher:
         'stlink': 'interface/stlink.cfg',
         'stlink-v2': 'interface/stlink-v2.cfg',
         'stlink-v2-1': 'interface/stlink-v2-1.cfg',
-        'stlink-v3': 'interface/stlink.cfg',
+        'stlink-v3': 'interface/stlink-dap.cfg',
         'jlink': 'interface/jlink.cfg',
     }
     
