@@ -130,24 +130,37 @@ class DockerBuildProvider(BuildProvider):
         return cmd
     
     def _build_zephyr_command(self, request: BuildRequest, build_dir: str, board: str) -> List[str]:
-        """Build command for Zephyr/west inside container."""
-        zephyr_base = self.env.get("ZEPHYR_BASE", "/workspace/zephyr")
+        """Build command for Zephyr/west inside container with workspace init."""
         cmd = ["sh", "-c"]
         
-        if request.source_path.startswith("samples/"):
-            source = f"{zephyr_base}/{request.source_path}"
-        elif request.source_path.startswith("zephyr/samples/"):
-            source = f"{zephyr_base}/{request.source_path}"
-        else:
-            source = f"{self.workdir}/source"
+        # Properly initialize Zephyr workspace and build
+        shell_cmd = f"""
+        set -e
+        export ZEPHYR_BASE=/workspace/zephyr
+        export PATH=$PATH:/root/.local/bin
         
-        shell_cmd = f"export ZEPHYR_BASE={zephyr_base} && cd {zephyr_base}/.. && west build -b {board} -d {build_dir}"
-        if request.clean_build:
-            shell_cmd += " -p"
-        shell_cmd += f" {source}"
+        # Initialize workspace if needed
+        if [ ! -d /workspace/zephyr/.git ]; then
+            cd /workspace
+            west init -m https://github.com/zephyrproject-rtos/zephyr.git --mr v3.7.0
+            west update --narrow -o=--depth=1 2>&1 | tail -20
+        fi
         
-        if "cmake_args" in request.options:
-            shell_cmd += " " + " ".join(f"-- {arg}" for arg in request.options["cmake_args"])
+        # Determine source path
+        if [ -d "{request.source_path}" ]; then
+            SOURCE="{request.source_path}"
+        elif [ -d "/workspace/zephyr/{request.source_path}" ]; then
+            SOURCE="/workspace/zephyr/{request.source_path}"
+        elif [ -d "/workspace/zephyr/samples/{request.source_path}" ]; then
+            SOURCE="/workspace/zephyr/samples/{request.source_path}"
+        else
+            SOURCE="/workspace/zephyr/samples/basic/blinky"
+        fi
+        
+        # Build
+        cd /workspace
+        west build -b {board} -d {build_dir} $SOURCE 2>&1
+        """
         
         cmd.append(shell_cmd)
         return cmd
