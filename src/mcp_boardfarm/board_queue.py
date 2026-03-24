@@ -7,7 +7,6 @@ This module provides a fair allocation system for board reservations with:
 - Custom reservation duration
 - Queue position tracking
 - Automatic assignment when boards become available
-- Fairness algorithms to prevent starvation
 - Persistence across server restarts
 """
 
@@ -60,10 +59,6 @@ class QueueEntry:
     assigned_board_id: Optional[str] = None
     completed_at: Optional[datetime] = None
     
-    # Fairness tracking
-    priority_boost_count: int = 0
-    last_boost_at: Optional[datetime] = None
-    
     # Options
     auto_accept: bool = False  # Auto-reserve when board available
     
@@ -84,8 +79,6 @@ class QueueEntry:
             "assigned_at": self.assigned_at.isoformat() if self.assigned_at else None,
             "assigned_board_id": self.assigned_board_id,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "priority_boost_count": self.priority_boost_count,
-            "last_boost_at": self.last_boost_at.isoformat() if self.last_boost_at else None,
             "auto_accept": self.auto_accept,
         }
     
@@ -107,8 +100,6 @@ class QueueEntry:
             assigned_at=datetime.fromisoformat(data["assigned_at"]) if data.get("assigned_at") else None,
             assigned_board_id=data.get("assigned_board_id"),
             completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None,
-            priority_boost_count=data.get("priority_boost_count", 0),
-            last_boost_at=datetime.fromisoformat(data["last_boost_at"]) if data.get("last_boost_at") else None,
             auto_accept=data.get("auto_accept", False),
         )
     
@@ -180,8 +171,6 @@ class BoardQueue:
     PRIORITY_LEVELS = 5  # 1-5, 1 is highest
     DEFAULT_TIMEOUT_MINUTES = 30
     MAX_RESERVATION_MINUTES = 480  # 8 hours max reservation
-    PRIORITY_BOOST_AFTER_MINUTES = 30  # Boost priority after waiting this long
-    MAX_BOOST_COUNT = 3  # Maximum number of priority boosts
     CLEANUP_AFTER_HOURS = 24  # Remove completed entries after this time
     SAVE_INTERVAL_SECONDS = 30  # Auto-save interval
     
@@ -212,7 +201,6 @@ class BoardQueue:
         # Background tasks
         self._save_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
-        self._boost_task: Optional[asyncio.Task] = None
         
         # Load existing queue
         self._load()
@@ -221,7 +209,6 @@ class BoardQueue:
         """Start background tasks."""
         self._save_task = asyncio.create_task(self._auto_save())
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-        self._boost_task = asyncio.create_task(self._periodic_priority_boost())
         logger.info("BoardQueue background tasks started")
     
     async def stop(self):
@@ -230,8 +217,6 @@ class BoardQueue:
             self._save_task.cancel()
         if self._cleanup_task:
             self._cleanup_task.cancel()
-        if self._boost_task:
-            self._boost_task.cancel()
         
         # Final save
         self._save()
@@ -656,35 +641,6 @@ class BoardQueue:
         
         return removed
     
-    async def apply_priority_boost(self) -> int:
-        """Apply priority boost to entries waiting too long.
-        
-        Returns:
-            Number of entries boosted
-        """
-        cutoff = datetime.now() - timedelta(minutes=self.PRIORITY_BOOST_AFTER_MINUTES)
-        boosted = 0
-        
-        async with self._lock:
-            for entry in self._entries.values():
-                if entry.status == QueueStatus.PENDING:
-                    if entry.requested_at < cutoff:
-                        if entry.priority_boost_count < self.MAX_BOOST_COUNT:
-                            entry.priority = max(1, entry.priority - 1)  # Boost priority
-                            entry.priority_boost_count += 1
-                            entry.last_boost_at = datetime.now()
-                            boosted += 1
-                            logger.info(f"Priority boost applied to {entry.queue_id}: now priority {entry.priority}")
-            
-            # Re-sort all queues after boosting
-            for board_type in self._queues:
-                self._sort_queue(board_type)
-        
-        if boosted > 0:
-            self._save()
-        
-        return boosted
-    
     async def _save(self):
         """Save queue state to disk."""
         try:
@@ -770,19 +726,6 @@ class BoardQueue:
             except Exception as e:
                 logger.error(f"Periodic cleanup error: {e}")
     
-    async def _periodic_priority_boost(self):
-        """Background task to periodically apply priority boosts."""
-        while True:
-            try:
-                # Check every 10 minutes
-                await asyncio.sleep(600)
-                self.apply_priority_boost()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Priority boost error: {e}")
-
-
 # Singleton instance for global access
 _queue_instance: Optional[BoardQueue] = None
 
