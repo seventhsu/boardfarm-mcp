@@ -3,7 +3,7 @@
 boards:
   # STM32 Nucleo H755ZI-Q - Connected via STLINK-V3
   nucleo-h755zi-q-01:
-    type: h755
+    type: stm32
     model: nucleo-h755zi-q
     mcu: STM32H755ZI
     description: "Dual-core development board (Cortex-M7/M4)"
