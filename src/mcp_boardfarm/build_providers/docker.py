@@ -148,7 +148,7 @@ export PATH=/opt/python/venv/bin:$PATH
 if [ ! -d /workdir/zephyr/.git ]; then
     echo "=== Initializing Zephyr workspace (first time, ~5 min)..."
     cd /workdir
-    west init -m https://github.com/zephyrproject-rtos/zephyr.git --mr v3.7.0 2>&1 | tail -5
+    west init -m https://github.com/zephyrproject-rtos/zephyr.git --mr v4.3.0 2>&1 | tail -5
     west update --narrow -o=--depth=1 2>&1 | tail -10
 fi
 
