@@ -1,66 +1,12 @@
-# Board Farm Configuration
-# Define all connected boards here
+# Board Farm Configuration - Actual Connected Hardware
 
 boards:
-  # STM32 Nucleo H755ZI-Q - Board 1
+  # STM32 Nucleo H755ZI-Q - Connected via STLINK-V3
   nucleo-h755zi-q-01:
     type: h755
     model: nucleo-h755zi-q
     mcu: STM32H755ZI
-    description: "Primary dual-core development board (Cortex-M7/M4)"
-    
-    # Memory specs (KB)
-    flash_size: 2048  # 2MB dual-bank
-    ram_size: 1024    # 1MB SRAM
-    
-    # Feature-based matching support
-    features:
-      - ethernet
-      - usb
-      - dual_core
-      - sd_card
-      - can
-      - spi
-      - i2c
-      - adc
-      - dac
-    capabilities:
-      ram_kb: 1024
-      flash_kb: 2048
-      cpu_mhz: 480
-      cores: 2
-    
-    # Debug interface
-    debugger:
-      type: stlink-v3
-      transport: swd
-      
-    # Serial connection (USB VCP)
-    serial:
-      port: /dev/ttyACM0
-      baud: 115200
-      
-    # Build system support
-    supported_frameworks:
-      - zephyr
-      - mbed
-      - baremetal
-      
-    # Zephyr-specific
-    zephyr:
-      board_name: nucleo_h755zi_q
-      soc: stm32h755xx
-      sysbuild: true  # Supports dual-core builds
-      
-    # Initial state
-    status: offline  # will be detected on startup
-
-  # STM32 Nucleo H755ZI-Q - Board 2
-  nucleo-h755zi-q-02:
-    type: h755
-    model: nucleo-h755zi-q
-    mcu: STM32H755ZI
-    description: "Secondary dual-core testing/CI board"
+    description: "Dual-core development board (Cortex-M7/M4)"
     
     flash_size: 2048
     ram_size: 1024
@@ -86,7 +32,7 @@ boards:
       transport: swd
       
     serial:
-      port: /dev/ttyACM1  # different USB port
+      port: /dev/ttyACM0
       baud: 115200
       
     supported_frameworks:
@@ -101,166 +47,59 @@ boards:
       
     status: offline
 
-  # Mock boards for testing (comment out when hardware arrives)
-  nucleo-f401re-01:
-    type: stm32
-    model: nucleo-f401re
-    mcu: STM32F401RET6
-    description: "Primary development board (MOCK)"
-    flash_size: 512
-    ram_size: 96
+  # CH57x (Magfest Swadge) - WCH BLE Dev Board
+  ch57x-swadge-01:
+    type: ch57x
+    model: magfest-swadge
+    mcu: CH570/CH572
+    description: "WCH RISC-V BLE development board"
+    
+    flash_size: 448
+    ram_size: 32
+    
     features:
-      - usb
-      - spi
-      - i2c
-      - adc
-    capabilities:
-      ram_kb: 96
-      flash_kb: 512
-      cpu_mhz: 84
-    debugger:
-      type: cmsis-dap
-      transport: swd
-    serial:
-      port: /dev/ttyACM0
-      baud: 115200
-    supported_frameworks:
-      - zephyr
-      - arduino
-      - mbed
-      - baremetal
-    zephyr:
-      board_name: nucleo_f401re
-    status: offline
-
-  nucleo-f401re-02:
-    type: stm32
-    model: nucleo-f401re
-    mcu: STM32F401RET6
-    description: "Testing/CI board (MOCK)"
-    flash_size: 512
-    ram_size: 96
-    features:
-      - usb
-      - spi
-      - i2c
-      - adc
-    capabilities:
-      ram_kb: 96
-      flash_kb: 512
-      cpu_mhz: 84
-    debugger:
-      type: cmsis-dap
-      transport: swd
-    serial:
-      port: /dev/ttyACM1
-      baud: 115200
-    supported_frameworks:
-      - zephyr
-      - arduino
-      - baremetal
-    zephyr:
-      board_name: nucleo_f401re
-    status: offline
-
-  # Example ESP32 board configuration
-  esp32-devkit-v4:
-    type: esp32
-    model: ESP32-DevKitC
-    mcu: ESP32-WROOM-32
-    description: "WiFi/BLE development board"
-    flash_size: 4096
-    ram_size: 520
-    features:
-      - wifi
       - bluetooth
-      - dual_core
+      - usb
       - spi
       - i2c
       - adc
-      - dac
     capabilities:
-      ram_kb: 520
-      flash_kb: 4096
-      cpu_mhz: 240
-      cores: 2
+      ram_kb: 32
+      flash_kb: 448
+      cpu_mhz: 60
+    
     debugger:
-      type: esp-prog
-      transport: jtag
+      type: wch-link
+      transport: swd
+      
     serial:
-      port: /dev/ttyUSB0
+      port: /dev/ttyACM0  # Shared with H755 for now
       baud: 115200
+      
     supported_frameworks:
-      - zephyr
-      - arduino
-      - esp-idf
-      - platformio
+      - ch32fun
+      - baremetal
+      
     status: offline
 
 # Server settings
 server:
-  # Host and port
   host: 127.0.0.1
   port: 8080
-  
-  # MCP protocol
-  mcp_version: "2024-11-05"
-  
-  # Limits
   max_concurrent_builds: 2
   max_build_time_seconds: 300
   default_board_timeout_minutes: 30
-  
-  # Logging
   log_level: INFO
-  log_dir: ./logs
-  
-  # Security (MVP: local only)
-  auth_required: false
-  api_key: null  # set for production
-  
+
 # Build settings
 build:
-  # Default toolchain
   default_toolchain: zephyr
-  
-  # Zephyr SDK path (for native builds)
-  zephyr_sdk: /opt/zephyr-sdk-0.16.5
-  
-  # Build cache
-  cache_dir: ./cache/builds
-  cache_size_mb: 1024
-  
-  # Container builds (recommended)
   use_docker: true
   docker_image: zephyrprojectrtos/zephyr-build:latest
 
 # Flash settings
 flash:
-  # OpenOCD config
   openocd_path: /usr/bin/openocd
-  openocd_scripts: /usr/share/openocd/scripts
-  
-  # Flash verification
   verify_flash: true
-  read_back_verify: true
-  
-  # Retry settings
   max_flash_attempts: 3
   flash_timeout_seconds: 60
-
-# Test settings
-test:
-  default_timeout_seconds: 30
-  frameworks:
-    - pytest-embedded
-    - robot
-  
-# Monitoring
-monitor:
-  # Serial log buffer size
-  log_buffer_lines: 10000
-  
-  # Real-time streaming
-  websocket_enabled: true
-  websocket_port: 8081
