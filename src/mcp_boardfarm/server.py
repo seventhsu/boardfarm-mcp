@@ -207,12 +207,18 @@ async def build_firmware(
     
     try:
         # Use build manager
+        # Extract zephyr board name from target if applicable
+        zephyr_board = None
+        if framework == "zephyr" and "/" in target:
+            zephyr_board = target.split("/", 1)[1]
+        
         result = await state.build_manager.build(
             BuildConfig(
                 framework=framework,
                 board_id=board_id,
                 source_path=source,
                 build_type=build_type,
+                zephyr_board=zephyr_board,
             )
         )
         
