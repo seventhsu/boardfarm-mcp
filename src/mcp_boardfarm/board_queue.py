@@ -351,45 +351,44 @@ class BoardQueue:
             
             return (position, same_priority_count, desc)
     
-    async def find_best_match(
+    def find_best_match(
         self,
         board_type: str,
         board_id: str,
         board_features: Set[str],
         board_capabilities: Dict[str, Any]
     ) -> Optional[QueueEntry]:
-        """Find the best matching queue entry for a specific board.
-        
+        """Find the best matching queue entry for a specific board (synchronous).
+
         Uses priority + FIFO ordering with feature matching scoring.
-        
+
         Args:
             board_type: The type of the board
             board_id: The board ID that became available
             board_features: Set of features this board has
             board_capabilities: Dict of board capabilities
-            
+
         Returns:
             QueueEntry or None if no pending requests match
         """
-        async with self._lock:
-            queue = self._queues.get(board_type, [])
-            
-            # Get all pending entries for this board type
-            candidates = [e for e in queue if e.status == QueueStatus.PENDING]
-            
-            if not candidates:
-                return None
-            
-            # Score each candidate
-            scored_candidates = []
-            for entry in candidates:
-                matches, score = entry.matches_board(board_features, board_capabilities)
-                if matches:
-                    # Combine priority (primary) with feature score (secondary)
-                    # Lower priority number = higher priority
-                    # Higher feature score = better match
-                    combined_score = (entry.priority, -score, entry.requested_at)
-                    scored_candidates.append((combined_score, entry))
+        queue = self._queues.get(board_type, [])
+
+        # Get all pending entries for this board type
+        candidates = [e for e in queue if e.status == QueueStatus.PENDING]
+
+        if not candidates:
+            return None
+
+        # Score each candidate
+        scored_candidates = []
+        for entry in candidates:
+            matches, score = entry.matches_board(board_features, board_capabilities)
+            if matches:
+                # Combine priority (primary) with feature score (secondary)
+                # Lower priority number = higher priority
+                # Higher feature score = better match
+                combined_score = (entry.priority, -score, entry.requested_at)
+                scored_candidates.append((combined_score, entry))
             
             if not scored_candidates:
                 return None
@@ -541,56 +540,54 @@ class BoardQueue:
         logger.info(f"Queue entry {queue_id} cancelled")
         return True
     
-    async def list_queue(
+    def list_queue(
         self,
         status: Optional[QueueStatus] = None,
         board_type: Optional[str] = None,
         agent_id: Optional[str] = None
     ) -> List[QueueEntry]:
-        """List queue entries with optional filtering.
-        
+        """List queue entries with optional filtering (synchronous).
+
         Returns:
             List of QueueEntry objects sorted by priority then time
         """
-        async with self._lock:
-            entries = list(self._entries.values())
-            
-            if status:
-                entries = [e for e in entries if e.status == status]
-            if board_type:
-                entries = [e for e in entries if e.board_type == board_type.lower()]
-            if agent_id:
-                entries = [e for e in entries if e.agent_id == agent_id]
-            
-            # Sort by board_type, then priority (ascending), then by request time
-            entries.sort(key=lambda e: (e.board_type, e.priority, e.requested_at))
-            
-            return entries
+        entries = list(self._entries.values())
+
+        if status:
+            entries = [e for e in entries if e.status == status]
+        if board_type:
+            entries = [e for e in entries if e.board_type == board_type.lower()]
+        if agent_id:
+            entries = [e for e in entries if e.agent_id == agent_id]
+
+        # Sort by board_type, then priority (ascending), then by request time
+        entries.sort(key=lambda e: (e.board_type, e.priority, e.requested_at))
+
+        return entries
     
-    async def get_queue_summary(self) -> Dict[str, Any]:
-        """Get a summary of the queue state."""
-        async with self._lock:
-            pending = [e for e in self._entries.values() if e.status == QueueStatus.PENDING]
-            assigned = [e for e in self._entries.values() if e.status == QueueStatus.ASSIGNED]
-            
-            # Group pending by board type
-            by_board_type: Dict[str, int] = {}
-            for e in pending:
-                by_board_type[e.board_type] = by_board_type.get(e.board_type, 0) + 1
-            
-            # Group by priority
-            by_priority: Dict[int, int] = {}
-            for e in pending:
-                by_priority[e.priority] = by_priority.get(e.priority, 0) + 1
-            
-            return {
-                "total_entries": len(self._entries),
-                "pending": len(pending),
-                "assigned": len(assigned),
-                "by_board_type": by_board_type,
-                "by_priority": by_priority,
-                "stats": self._stats.to_dict(),
-            }
+    def get_queue_summary(self) -> Dict[str, Any]:
+        """Get a summary of the queue state (synchronous)."""
+        pending = [e for e in self._entries.values() if e.status == QueueStatus.PENDING]
+        assigned = [e for e in self._entries.values() if e.status == QueueStatus.ASSIGNED]
+
+        # Group pending by board type
+        by_board_type: Dict[str, int] = {}
+        for e in pending:
+            by_board_type[e.board_type] = by_board_type.get(e.board_type, 0) + 1
+
+        # Group by priority
+        by_priority: Dict[int, int] = {}
+        for e in pending:
+            by_priority[e.priority] = by_priority.get(e.priority, 0) + 1
+
+        return {
+            "total_entries": len(self._entries),
+            "pending": len(pending),
+            "assigned": len(assigned),
+            "by_board_type": by_board_type,
+            "by_priority": by_priority,
+            "stats": self._stats.to_dict(),
+        }
     
     def register_callback(self, callback: Callable[[str, QueueEntry], None]):
         """Register a callback for queue events.

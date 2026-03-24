@@ -150,19 +150,21 @@ class BuildResult:
     success: bool
     board_id: str
     framework: str
-    
+
     # Paths
     build_dir: Optional[str] = None
     elf_path: Optional[str] = None
     bin_path: Optional[str] = None
     hex_path: Optional[str] = None
-    
+
     # Output
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
-    
-    # Errors
+
+    # Errors and warnings
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
     error_message: Optional[str] = None
 
 

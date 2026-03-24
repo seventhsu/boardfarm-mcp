@@ -22,8 +22,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T08:50:00.835577",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "99c2ed69": {
@@ -48,8 +46,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T00:44:15.174571",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "06573deb": {
@@ -69,8 +65,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T00:44:15.174782",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": false
     },
     "33674350": {
@@ -88,8 +82,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T01:17:47.853338",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "d5ddb09d": {
@@ -107,8 +99,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T02:13:56.317391",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "5cf350ed": {
@@ -126,8 +116,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T02:12:33.502837",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "fd1f233b": {
@@ -145,8 +133,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T08:50:00.836043",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "bd7466cf": {
@@ -164,8 +150,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T02:19:37.997877",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "afa77383": {
@@ -183,8 +167,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T02:19:09.476552",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "82990e37": {
@@ -202,8 +184,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T08:50:00.836389",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": true
     },
     "d6cdea46": {
@@ -221,8 +201,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T08:50:00.836715",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": false
     },
     "338490ae": {
@@ -240,8 +218,6 @@
       "assigned_at": null,
       "assigned_board_id": null,
       "completed_at": "2026-02-26T08:50:00.837156",
-      "priority_boost_count": 0,
-      "last_boost_at": null,
       "auto_accept": false
     }
   },
@@ -252,5 +228,5 @@
     "expired_requests": 0,
     "avg_wait_time_seconds": 0.0
   },
-  "saved_at": "2026-02-26T08:50:00.837189"
+  "saved_at": "2026-03-23T20:36:42.956220"
 }
