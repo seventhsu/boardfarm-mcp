@@ -28,7 +28,7 @@ from .models import (
 )
 from .board_manager import BoardManager
 from .board_queue import BoardQueue, QueueStatus, get_queue
-from .builder import BuildManager, ZephyrBuilder, MockBuilder
+from .builder import BuildManager
 from .build_providers import (
     BuildRequest, BuildProviderFactory, BuildStatus,
     LocalBuildProvider, DockerBuildProvider
@@ -51,7 +51,6 @@ class ServerState:
         self.board_manager: Optional[BoardManager] = None
         self.board_queue: Optional[BoardQueue] = None
         self.build_manager: Optional[BuildManager] = None
-        self.builder: Optional[ZephyrBuilder] = None  # Legacy
         self.flasher: Optional[OpenOCDFlasher] = None
         self.monitor: Optional[SerialMonitor] = None
         self.debug_manager: Optional[GDBDebuggerManager] = None
@@ -96,9 +95,6 @@ async def app_lifespan(server: FastMCP):
     # Initialize new build manager with provider configuration
     build_providers_config = _load_build_config(config_path)
     state.build_manager = BuildManager(build_providers_config)
-    
-    # Legacy builder for backward compatibility
-    state.builder = ZephyrBuilder()
     state.flasher = OpenOCDFlasher()
     state.monitor = SerialMonitor()
     state.debug_manager = GDBDebuggerManager()
@@ -210,27 +206,15 @@ async def build_firmware(
     await bm.update_board_state(board_id, BoardState.BUILDING)
     
     try:
-        # Use new build manager
-        if state.build_manager:
-            result = await state.build_manager.build(
-                BuildConfig(
-                    framework=framework,
-                    board_id=board_id,
-                    source_path=source,
-                    build_type=build_type,
-                )
+        # Use build manager
+        result = await state.build_manager.build(
+            BuildConfig(
+                framework=framework,
+                board_id=board_id,
+                source_path=source,
+                build_type=build_type,
             )
-        else:
-            # Fallback to legacy builder
-            builder = MockBuilder()
-            result = await builder.build(
-                BuildConfig(
-                    framework=framework,
-                    board_id=board_id,
-                    source_path=source,
-                    build_type=build_type,
-                )
-            )
+        )
         
         # Store build info for status tracking
         state._active_builds[result.build_id] = {

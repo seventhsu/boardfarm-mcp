@@ -7,8 +7,6 @@ ZephyrBuilder with a flexible, provider-based system.
 
 import asyncio
 import logging
-import time
-import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -204,88 +202,4 @@ class BuildManager:
         return all_targets
 
 
-# ============================================================================
-# Legacy Classes (for backward compatibility)
-# ============================================================================
 
-class ZephyrBuilder:
-    """Legacy Zephyr builder - now delegates to BuildManager.
-    
-    Maintains backward compatibility with existing code.
-    """
-    
-    def __init__(self, zephyr_sdk_path: Optional[str] = None, 
-                 use_docker: bool = True, 
-                 project_root: Optional[str] = None):
-        """Initialize legacy Zephyr builder."""
-        self.zephyr_sdk_path = zephyr_sdk_path or "/opt/zephyr-sdk-0.17.4"
-        self.use_docker = use_docker
-        self.docker_image = "zephyrprojectrtos/zephyr-build:latest"
-        self.project_root = Path(project_root) if project_root else Path.cwd()
-        
-        # Create internal build manager
-        provider_config = {"type": "docker" if use_docker else "local"}
-        if use_docker:
-            provider_config["image"] = self.docker_image
-        
-        self._manager = BuildManager({
-            "zephyr": provider_config
-        })
-    
-    async def build(self, config: BuildConfig) -> BuildResult:
-        """Build firmware (legacy interface)."""
-        return await self._manager.build(config)
-    
-    def build_sync(self, config: BuildConfig) -> BuildResult:
-        """Synchronous build (for legacy compatibility)."""
-        try:
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self.build(config))
-        except RuntimeError:
-            # No event loop, create one
-            return asyncio.run(self.build(config))
-
-
-class MockBuilder:
-    """Mock builder for testing without actual build capability."""
-    
-    def __init__(self):
-        self.cache_dir = Path("./cache/builds")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
-    async def build(self, config: BuildConfig) -> BuildResult:
-        """Simulate a build."""
-        start_time = time.time()
-        build_id = f"mock_{int(start_time)}_{uuid.uuid4().hex[:8]}"
-        
-        logger.info(f"[MOCK] Building {build_id} for {config.board_id}")
-        
-        # Simulate build time
-        await asyncio.sleep(0.5)
-        
-        # Create mock build artifacts
-        build_dir = self.cache_dir / build_id
-        build_dir.mkdir(parents=True, exist_ok=True)
-        zephyr_dir = build_dir / "zephyr"
-        zephyr_dir.mkdir(exist_ok=True)
-        
-        # Create dummy files
-        (zephyr_dir / "zephyr.elf").write_text("MOCK ELF FILE")
-        (zephyr_dir / "zephyr.bin").write_bytes(b"\x00\x01\x02\x03")
-        (zephyr_dir / "zephyr.hex").write_text(":00000001FF")
-        
-        duration = time.time() - start_time
-        
-        return BuildResult(
-            build_id=build_id,
-            success=True,
-            board_id=config.board_id,
-            framework=config.framework,
-            build_dir=str(build_dir),
-            elf_path=str(zephyr_dir / "zephyr.elf"),
-            bin_path=str(zephyr_dir / "zephyr.bin"),
-            hex_path=str(zephyr_dir / "zephyr.hex"),
-            stdout=f"[MOCK] Build completed successfully in {duration:.2f}s",
-            stderr="",
-            duration_seconds=duration
-        )
