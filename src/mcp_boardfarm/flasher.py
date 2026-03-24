@@ -141,7 +141,7 @@ class OpenOCDFlasher:
         # For H7 dual-core, select the core after init
         if core and 'h7' in board.mcu.lower():
             ap = 0 if core.upper() == 'M7' else 1
-            cmd.extend(["-c", f"dap apreg ap{ap} 0x0"])
+#             cmd.extend(["-c", f"dap apreg ap{ap} 0x0"])
         
         cmd.extend([
             "-c", "reset init",
