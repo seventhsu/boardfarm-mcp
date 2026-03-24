@@ -298,8 +298,8 @@ class BoardQueue:
         logger.info(f"Queue request added: {queue_id} for {board_type} (priority {priority}) by {agent_id}")
         return queue_id
     
-    async def _sort_queue(self, board_type: str):
-        """Sort a per-type queue by priority (ascending), then request time."""
+    def _sort_queue(self, board_type: str):
+        """Sort a per-type queue by priority (ascending), then request time (synchronous)."""
         if board_type in self._queues:
             self._queues[board_type].sort(key=lambda e: (e.priority, e.requested_at))
     
@@ -641,8 +641,8 @@ class BoardQueue:
         
         return removed
     
-    async def _save(self):
-        """Save queue state to disk."""
+    def _save(self):
+        """Save queue state to disk (synchronous)."""
         try:
             data = {
                 "entries": {k: v.to_dict() for k, v in self._entries.items()},
@@ -659,8 +659,8 @@ class BoardQueue:
         except Exception as e:
             logger.error(f"Failed to save queue state: {e}")
     
-    async def _load(self):
-        """Load queue state from disk."""
+    def _load(self):
+        """Load queue state from disk (synchronous)."""
         if not self._storage_path.exists():
             logger.info("No existing queue state found, starting fresh")
             return

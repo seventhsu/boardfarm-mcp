@@ -1,0 +1,50 @@
+{
+  "entries": {
+    "df7bf2ab": {
+      "queue_id": "df7bf2ab",
+      "board_type": "h755",
+      "priority": 2,
+      "agent_id": "test-agent",
+      "job_description": "Integration test",
+      "estimated_minutes": 30,
+      "requested_at": "2026-03-23T19:38:28.905246",
+      "status": "CANCELLED",
+      "required_features": [
+        "ethernet"
+      ],
+      "optional_features": [],
+      "min_capabilities": {},
+      "assigned_at": null,
+      "assigned_board_id": null,
+      "completed_at": "2026-03-23T19:38:28.907130",
+      "auto_accept": false
+    },
+    "1571e797": {
+      "queue_id": "1571e797",
+      "board_type": "h755",
+      "priority": 2,
+      "agent_id": "test-agent",
+      "job_description": "Integration test",
+      "estimated_minutes": 30,
+      "requested_at": "2026-03-23T19:38:50.895358",
+      "status": "CANCELLED",
+      "required_features": [
+        "ethernet"
+      ],
+      "optional_features": [],
+      "min_capabilities": {},
+      "assigned_at": null,
+      "assigned_board_id": null,
+      "completed_at": "2026-03-23T19:38:50.895630",
+      "auto_accept": false
+    }
+  },
+  "stats": {
+    "total_requests": 2,
+    "completed_requests": 0,
+    "cancelled_requests": 2,
+    "expired_requests": 0,
+    "avg_wait_time_seconds": 0.0
+  },
+  "saved_at": "2026-03-23T19:38:50.898232"
+}
