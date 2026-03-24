@@ -93,8 +93,14 @@ class DockerBuildProvider(BuildProvider):
         if self.privileged:
             cmd.append("--privileged")
         
-        cmd.extend(["-w", self.workdir])
+        # Override entrypoint to avoid VNC server, use workdir from image
+        cmd.extend(["--entrypoint", "", "-w", "/workdir"])
         cmd.extend(["-v", f"{host_build_dir}:{container_build_dir}"])
+        
+        # Mount persistent workspace for Zephyr
+        workspace_dir = Path.home() / ".zephyr-workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        cmd.extend(["-v", f"{workspace_dir}:/workdir"])
         
         source_path = Path(request.source_path)
         if source_path.exists():
@@ -131,37 +137,37 @@ class DockerBuildProvider(BuildProvider):
     
     def _build_zephyr_command(self, request: BuildRequest, build_dir: str, board: str) -> List[str]:
         """Build command for Zephyr/west inside container with workspace init."""
-        cmd = ["sh", "-c"]
-        
-        # Properly initialize Zephyr workspace and build
-        shell_cmd = f"""
-        set -e
-        export ZEPHYR_BASE=/workspace/zephyr
-        export PATH=$PATH:/root/.local/bin
-        
-        # Initialize workspace if needed
-        if [ ! -d /workspace/zephyr/.git ]; then
-            cd /workspace
-            west init -m https://github.com/zephyrproject-rtos/zephyr.git --mr v3.7.0
-            west update --narrow -o=--depth=1 2>&1 | tail -20
-        fi
-        
-        # Determine source path
-        if [ -d "{request.source_path}" ]; then
-            SOURCE="{request.source_path}"
-        elif [ -d "/workspace/zephyr/{request.source_path}" ]; then
-            SOURCE="/workspace/zephyr/{request.source_path}"
-        elif [ -d "/workspace/zephyr/samples/{request.source_path}" ]; then
-            SOURCE="/workspace/zephyr/samples/{request.source_path}"
-        else
-            SOURCE="/workspace/zephyr/samples/basic/blinky"
-        fi
-        
-        # Build
-        cd /workspace
-        west build -b {board} -d {build_dir} $SOURCE 2>&1
-        """
-        
+        cmd = ["bash", "-c"]
+
+        # Initialize and build - runs as user who owns the mounted directory
+        shell_cmd = f"""set -e
+export ZEPHYR_BASE=/workdir/zephyr
+export PATH=/opt/python/venv/bin:$PATH
+
+# Initialize workspace if needed
+if [ ! -d /workdir/zephyr/.git ]; then
+    echo "=== Initializing Zephyr workspace (first time, ~5 min)..."
+    cd /workdir
+    west init -m https://github.com/zephyrproject-rtos/zephyr.git --mr v3.7.0 2>&1 | tail -5
+    west update --narrow -o=--depth=1 2>&1 | tail -10
+fi
+
+# Determine source path
+if [ -d "{request.source_path}" ]; then
+    SOURCE="{request.source_path}"
+elif [ -d "/workdir/zephyr/{request.source_path}" ]; then
+    SOURCE="/workdir/zephyr/{request.source_path}"
+elif [ -d "/workdir/zephyr/samples/{request.source_path}" ]; then
+    SOURCE="/workdir/zephyr/samples/{request.source_path}"
+else
+    SOURCE="/workdir/zephyr/samples/basic/blinky"
+fi
+
+echo "=== Building for board: {board}"
+cd /workdir
+west build -b {board} -d {build_dir} "$SOURCE" 2>&1
+"""
+
         cmd.append(shell_cmd)
         return cmd
     
