@@ -22,9 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Callable, Tuple, Set, Union
-from threading import Lock
-
-# Type alias for callbacks that can be sync or async
+# Type alias for async callbacks only
 QueueCallback = Callable[[str, "QueueEntry"], None]
 AssignmentCallback = Callable[[str, str], None]  # queue_id, board_id
 
@@ -198,10 +196,9 @@ class BoardQueue:
         # All entries indexed by queue_id
         self._entries: Dict[str, QueueEntry] = {}
         
-        self._lock = Lock()
+        self._lock = asyncio.Lock()
         self._callbacks: List[QueueCallback] = []
         self._assignment_callbacks: List[AssignmentCallback] = []
-        self._async_lock = asyncio.Lock()  # For async operations
         
         # Set up storage path
         if storage_path is None:
@@ -240,7 +237,7 @@ class BoardQueue:
         self._save()
         logger.info("BoardQueue stopped")
     
-    def add_request(
+    async def add_request(
         self,
         board_type: str,
         priority: int,
@@ -291,7 +288,7 @@ class BoardQueue:
             auto_accept=auto_accept,
         )
         
-        with self._lock:
+        async with self._lock:
             # Add to per-type queue
             if entry.board_type not in self._queues:
                 self._queues[entry.board_type] = []
@@ -316,23 +313,23 @@ class BoardQueue:
         logger.info(f"Queue request added: {queue_id} for {board_type} (priority {priority}) by {agent_id}")
         return queue_id
     
-    def _sort_queue(self, board_type: str):
+    async def _sort_queue(self, board_type: str):
         """Sort a per-type queue by priority (ascending), then request time."""
         if board_type in self._queues:
             self._queues[board_type].sort(key=lambda e: (e.priority, e.requested_at))
     
-    def get_entry(self, queue_id: str) -> Optional[QueueEntry]:
+    async def get_entry(self, queue_id: str) -> Optional[QueueEntry]:
         """Get a queue entry by ID."""
-        with self._lock:
+        async with self._lock:
             return self._entries.get(queue_id)
     
-    def get_position(self, queue_id: str) -> Tuple[int, int, str]:
+    async def get_position(self, queue_id: str) -> Tuple[int, int, str]:
         """Get queue position information.
         
         Returns:
             Tuple of (position_within_queue, total_pending_at_priority, descriptive_string)
         """
-        with self._lock:
+        async with self._lock:
             entry = self._entries.get(queue_id)
             if not entry:
                 return (-1, 0, "Queue entry not found")
@@ -369,7 +366,7 @@ class BoardQueue:
             
             return (position, same_priority_count, desc)
     
-    def find_best_match(
+    async def find_best_match(
         self,
         board_type: str,
         board_id: str,
@@ -389,7 +386,7 @@ class BoardQueue:
         Returns:
             QueueEntry or None if no pending requests match
         """
-        with self._lock:
+        async with self._lock:
             queue = self._queues.get(board_type, [])
             
             # Get all pending entries for this board type
@@ -416,7 +413,7 @@ class BoardQueue:
             scored_candidates.sort(key=lambda x: x[0])
             return scored_candidates[0][1]
     
-    def get_next_for_board(
+    async def get_next_for_board(
         self,
         board_type: str,
         board_id: str,
@@ -427,7 +424,7 @@ class BoardQueue:
         
         For feature-based matching, use find_best_match().
         """
-        with self._lock:
+        async with self._lock:
             queue = self._queues.get(board_type, [])
             
             # Get all pending entries for this board type
@@ -449,7 +446,7 @@ class BoardQueue:
         Returns:
             True if assignment succeeded
         """
-        with self._lock:
+        async with self._lock:
             entry = self._entries.get(queue_id)
             if not entry:
                 return False
@@ -477,34 +474,8 @@ class BoardQueue:
         logger.info(f"Board {board_id} assigned to queue entry {queue_id}")
         return True
     
-    def assign_board_sync(self, queue_id: str, board_id: str) -> bool:
-        """Synchronous version of assign_board for non-async contexts.
-        
-        Args:
-            queue_id: The queue entry ID
-            board_id: The board to assign
-            
-        Returns:
-            True if assignment succeeded
-        """
-        with self._lock:
-            entry = self._entries.get(queue_id)
-            if not entry:
-                return False
-            
-            if entry.status != QueueStatus.PENDING:
-                logger.warning(f"Cannot assign board to {queue_id}: status is {entry.status.name}")
-                return False
-            
-            entry.status = QueueStatus.ASSIGNED
-            entry.assigned_at = datetime.now()
-            entry.assigned_board_id = board_id
-        
-        self._save()
-        logger.info(f"Board {board_id} assigned to queue entry {queue_id} (sync)")
-        return True
-    
-    def complete_job(self, queue_id: str) -> bool:
+
+    async def complete_job(self, queue_id: str) -> bool:
         """Mark a queue entry as completed.
         
         Args:
@@ -513,7 +484,7 @@ class BoardQueue:
         Returns:
             True if marked as completed
         """
-        with self._lock:
+        async with self._lock:
             entry = self._entries.get(queue_id)
             if not entry:
                 return False
@@ -546,7 +517,7 @@ class BoardQueue:
         logger.info(f"Queue entry {queue_id} marked as completed")
         return True
     
-    def cancel_request(self, queue_id: str, agent_id: Optional[str] = None) -> bool:
+    async def cancel_request(self, queue_id: str, agent_id: Optional[str] = None) -> bool:
         """Cancel a queue request.
         
         Args:
@@ -556,7 +527,7 @@ class BoardQueue:
         Returns:
             True if cancelled
         """
-        with self._lock:
+        async with self._lock:
             entry = self._entries.get(queue_id)
             if not entry:
                 return False
@@ -585,7 +556,7 @@ class BoardQueue:
         logger.info(f"Queue entry {queue_id} cancelled")
         return True
     
-    def list_queue(
+    async def list_queue(
         self,
         status: Optional[QueueStatus] = None,
         board_type: Optional[str] = None,
@@ -596,7 +567,7 @@ class BoardQueue:
         Returns:
             List of QueueEntry objects sorted by priority then time
         """
-        with self._lock:
+        async with self._lock:
             entries = list(self._entries.values())
             
             if status:
@@ -611,9 +582,9 @@ class BoardQueue:
             
             return entries
     
-    def get_queue_summary(self) -> Dict[str, Any]:
+    async def get_queue_summary(self) -> Dict[str, Any]:
         """Get a summary of the queue state."""
-        with self._lock:
+        async with self._lock:
             pending = [e for e in self._entries.values() if e.status == QueueStatus.PENDING]
             assigned = [e for e in self._entries.values() if e.status == QueueStatus.ASSIGNED]
             
@@ -653,7 +624,7 @@ class BoardQueue:
         """
         self._assignment_callbacks.append(callback)
     
-    def cleanup_expired(self) -> int:
+    async def cleanup_expired(self) -> int:
         """Remove old completed/cancelled entries.
         
         Returns:
@@ -662,7 +633,7 @@ class BoardQueue:
         cutoff = datetime.now() - timedelta(hours=self.CLEANUP_AFTER_HOURS)
         removed = 0
         
-        with self._lock:
+        async with self._lock:
             to_remove = []
             for queue_id, entry in self._entries.items():
                 if entry.status in (QueueStatus.COMPLETED, QueueStatus.CANCELLED, QueueStatus.EXPIRED):
@@ -685,7 +656,7 @@ class BoardQueue:
         
         return removed
     
-    def apply_priority_boost(self) -> int:
+    async def apply_priority_boost(self) -> int:
         """Apply priority boost to entries waiting too long.
         
         Returns:
@@ -694,7 +665,7 @@ class BoardQueue:
         cutoff = datetime.now() - timedelta(minutes=self.PRIORITY_BOOST_AFTER_MINUTES)
         boosted = 0
         
-        with self._lock:
+        async with self._lock:
             for entry in self._entries.values():
                 if entry.status == QueueStatus.PENDING:
                     if entry.requested_at < cutoff:
@@ -714,7 +685,7 @@ class BoardQueue:
         
         return boosted
     
-    def _save(self):
+    async def _save(self):
         """Save queue state to disk."""
         try:
             data = {
@@ -732,7 +703,7 @@ class BoardQueue:
         except Exception as e:
             logger.error(f"Failed to save queue state: {e}")
     
-    def _load(self):
+    async def _load(self):
         """Load queue state from disk."""
         if not self._storage_path.exists():
             logger.info("No existing queue state found, starting fresh")
