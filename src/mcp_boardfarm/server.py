@@ -33,7 +33,7 @@ from .build_providers import (
     BuildRequest, BuildProviderFactory, BuildStatus,
     LocalBuildProvider, DockerBuildProvider
 )
-from .flasher import AutoFlasher
+from .flasher import STLinkFlasher
 from .monitor import SerialMonitor, MockMonitor
 from .gdb_debugger import GDBDebuggerManager, GDBDebugger, StepType
 from .gdb_models import GDBServerConfig
@@ -95,7 +95,7 @@ async def app_lifespan(server: FastMCP):
     # Initialize new build manager with provider configuration
     build_providers_config = _load_build_config(config_path)
     state.build_manager = BuildManager(build_providers_config)
-    state.flasher = AutoFlasher()
+    state.flasher = STLinkFlasher()
     state.monitor = SerialMonitor()
     state.debug_manager = GDBDebuggerManager()
     logger.info(f"Server ready. Detected {len(state.board_manager.list_boards())} boards.")
@@ -766,7 +766,7 @@ async def analyze_fault_arm_cortex_m(ctx: Context, board_id: str) -> str:
     if not dm:
         return "Error: Debug manager not initialized."
     
-    debugger = dm.get_debugger(board_id)
+    debugger = dm.get_session(board_id)
     if not debugger:
         return f"Error: No active GDB session for board '{board_id}'. Start a debug session first."
     
@@ -944,11 +944,11 @@ async def start_debug_session(ctx: Context, board_id: str) -> str:
         return f"Error: Board '{board_id}' must be reserved before debugging."
     
     # Check if debugger already exists
-    if dm.get_debugger(board_id):
+    if dm.get_session(board_id):
         return f"Debug session already active for '{board_id}'."
     
     # Create debugger
-    debugger = dm.create_debugger(board)
+    debugger = dm.create_session(board)
     
     # Start session
     result = await debugger.start_session()
@@ -975,12 +975,12 @@ async def stop_debug_session(ctx: Context, board_id: str) -> str:
     if not dm:
         return "Error: Debug manager not initialized."
     
-    debugger = dm.get_debugger(board_id)
+    debugger = dm.get_session(board_id)
     if not debugger:
         return f"No active debug session for '{board_id}'."
     
     result = await debugger.stop_session()
-    dm.remove_debugger(board_id)
+    dm.remove_session(board_id)
     
     if result.success:
         return f"✓ Debug session stopped for '{board_id}'"
@@ -1005,7 +1005,7 @@ async def step_debug(ctx: Context, board_id: str, step_type: str = "into") -> st
     if not dm:
         return "Error: Debug manager not initialized."
     
-    debugger = dm.get_debugger(board_id)
+    debugger = dm.get_session(board_id)
     if not debugger:
         return f"Error: No active GDB session for '{board_id}'. Start a debug session first."
     
@@ -1040,7 +1040,7 @@ async def get_debug_state(ctx: Context, board_id: str) -> str:
     if not dm:
         return "Error: Debug manager not initialized."
     
-    debugger = dm.get_debugger(board_id)
+    debugger = dm.get_session(board_id)
     if not debugger:
         return f"Error: No active GDB session for '{board_id}'."
     
@@ -1068,7 +1068,7 @@ async def read_registers(ctx: Context, board_id: str) -> str:
     if not dm:
         return "Error: Debug manager not initialized."
     
-    debugger = dm.get_debugger(board_id)
+    debugger = dm.get_session(board_id)
     if not debugger:
         return f"Error: No active GDB session for '{board_id}'. Start a debug session first."
     
