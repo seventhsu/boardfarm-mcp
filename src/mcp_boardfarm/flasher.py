@@ -250,8 +250,8 @@ class STLinkFlasher:
         
         logger.info(f"Flashing {build_result.build_id} to {board.board_id} using st-flash")
         
-        # Build st-flash command
-        cmd = ['st-flash', '--reset', 'write', str(bin_path), '0x08000000']
+        # Build st-flash command with connect-under-reset for H7
+        cmd = ['st-flash', '--connect-under-reset', '--reset', 'write', str(bin_path), '0x08000000']
         
         try:
             result = subprocess.run(
