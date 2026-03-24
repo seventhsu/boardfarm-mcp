@@ -163,9 +163,16 @@ else
     SOURCE="/workdir/zephyr/samples/basic/blinky"
 fi
 
-echo "=== Building for board: {board}"
+# For dual-core H7 boards, default to M7 core
+if [ "{board}" = "nucleo_h755zi_q" ]; then
+    BOARD_TARGET="{board}/stm32h755xx/m7"
+else
+    BOARD_TARGET="{board}"
+fi
+
+echo "=== Building for board: $BOARD_TARGET"
 cd /workdir
-west build -b {board} -d {build_dir} "$SOURCE" 2>&1
+west build -b "$BOARD_TARGET" -d {build_dir} "$SOURCE" 2>&1
 """
 
         cmd.append(shell_cmd)
