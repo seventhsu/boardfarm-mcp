@@ -265,6 +265,88 @@ async def build_firmware(
 
 
 @mcp.tool()
+async def flash_firmware(ctx: Context, board_id: str, build_id: str,
+                         core: Optional[str] = None) -> str:
+    """Flash firmware to a reserved board using OpenOCD.
+
+    Programs the built firmware onto the target board. The board must be
+    in RESERVED state before flashing.
+
+    Args:
+        board_id: The board to flash (must be reserved)
+        build_id: The build ID from build_firmware
+        core: For dual-core MCUs (H7), specify 'M7' or 'M4' (default: M7)
+
+    Returns:
+        Flash operation result
+
+    Example:
+        flash_firmware("nucleo-h755zi-q-01", "build_12345")
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    bm = state.board_manager
+    flasher = state.flasher
+
+    if not flasher:
+        return "Error: Flasher not initialized."
+
+    board = bm.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+
+    if board.status != BoardState.RESERVED:
+        return f"Error: Board '{board_id}' is not reserved. Current status: {board.status.name}"
+
+    if build_id not in state._active_builds:
+        return f"Error: Build '{build_id}' not found."
+
+    build_info = state._active_builds[build_id]
+    build_result = build_info["result"]
+
+    if not build_result.success:
+        return f"Error: Build '{build_id}' was not successful. Cannot flash failed build."
+
+    if not build_result.elf_path:
+        return f"Error: Build '{build_id}' has no ELF file."
+
+    old_status = board.status
+    await bm.update_board_state(board_id, BoardState.FLASHING)
+
+    try:
+        logger.info(f"Flashing build {build_id} to {board_id}")
+        flash_result = flasher.flash(board, build_result, core=core)
+
+        await bm.update_board_state(board_id, old_status)
+
+        if flash_result.success:
+            lines = [
+                f"✓ Flash successful!",
+                f"Board: {board_id}",
+                f"Build: {build_id}",
+                f"Duration: {flash_result.duration_seconds:.2f}s",
+            ]
+            if flash_result.bytes_written:
+                lines.append(f"Bytes written: {flash_result.bytes_written}")
+            if flash_result.verify_passed:
+                lines.append("Verification: PASSED")
+            return "\n".join(lines)
+        else:
+            lines = [
+                f"✗ Flash failed!",
+                f"Board: {board_id}",
+                f"Error: {flash_result.error_message}",
+            ]
+            if flash_result.stderr:
+                lines.append(f"\nStderr:\n{flash_result.stderr[:500]}")
+            return "\n".join(lines)
+
+    except Exception as e:
+        await bm.update_board_state(board_id, old_status)
+        logger.exception(f"Flash failed: {e}")
+        return f"Error: Flash failed with exception: {e}"
+
+
+@mcp.tool()
 async def build_status(ctx: Context, build_id: str) -> str:
     """Check the status of a build.
     
