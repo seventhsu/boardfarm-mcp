@@ -201,6 +201,107 @@ class OpenOCDFlasher:
             return False
 
 
+class STLinkFlasher:
+    """Flasher using ST-Link CLI tools (st-flash)."""
+    
+    def __init__(self):
+        self.timeout_seconds = 60
+    
+    def flash(self, board: Board, build_result: BuildResult,
+              core: Optional[str] = None) -> FlashResult:
+        """Flash firmware using st-flash."""
+        start_time = time.time()
+        
+        if not build_result.bin_path:
+            # Try to convert ELF to bin using objcopy
+            elf_path = Path(build_result.elf_path) if build_result.elf_path else None
+            if not elf_path or not elf_path.exists():
+                return FlashResult(
+                    success=False,
+                    board_id=board.board_id,
+                    build_id=build_result.build_id,
+                    error_message="No BIN file and no ELF to convert"
+                )
+            
+            # Create temp bin file
+            bin_path = elf_path.with_suffix('.bin')
+            try:
+                subprocess.run(
+                    ['arm-none-eabi-objcopy', '-O', 'binary', str(elf_path), str(bin_path)],
+                    check=True, capture_output=True
+                )
+            except Exception as e:
+                return FlashResult(
+                    success=False,
+                    board_id=board.board_id,
+                    build_id=build_result.build_id,
+                    error_message=f"Failed to convert ELF to BIN: {e}"
+                )
+        else:
+            bin_path = Path(build_result.bin_path)
+        
+        if not bin_path.exists():
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message=f"BIN file not found: {bin_path}"
+            )
+        
+        logger.info(f"Flashing {build_result.build_id} to {board.board_id} using st-flash")
+        
+        # Build st-flash command
+        cmd = ['st-flash', '--reset', 'write', str(bin_path), '0x08000000']
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds
+            )
+            
+            success = result.returncode == 0
+            duration = time.time() - start_time
+            
+            return FlashResult(
+                success=success,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                bytes_written=bin_path.stat().st_size if success else 0,
+                verify_passed=success,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                duration_seconds=duration,
+                error_message=result.stderr if not success else None
+            )
+            
+        except subprocess.TimeoutExpired:
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message=f"Flash timeout after {self.timeout_seconds}s",
+                duration_seconds=time.time() - start_time
+            )
+        except FileNotFoundError:
+            return FlashResult(
+                success=False,
+                board_id=board.board_id,
+                build_id=build_result.build_id,
+                error_message="st-flash not found. Install stlink-tools package."
+            )
+    
+    def reset(self, board: Board, reset_type: str = "soft") -> bool:
+        """Reset using st-flash."""
+        try:
+            result = subprocess.run(['st-flash', 'reset'], capture_output=True, timeout=10)
+            return result.returncode == 0
+        except Exception as e:
+            logger.error(f"Reset failed: {e}")
+            return False
+
+
 class MockFlasher:
     """Mock flasher for testing without hardware."""
     
