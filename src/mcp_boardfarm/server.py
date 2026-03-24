@@ -917,6 +917,170 @@ async def analyze_fault_arm_cortex_m(ctx: Context, board_id: str) -> str:
 
 
 @mcp.tool()
+# Debug session management tools
+
+@mcp.tool()
+async def start_debug_session(ctx: Context, board_id: str) -> str:
+    """Start a GDB debug session for a reserved board.
+    
+    Args:
+        board_id: The board to debug (must be reserved)
+        
+    Returns:
+        Session start result
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    bm = state.board_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    board = bm.get_board(board_id)
+    if not board:
+        return f"Error: Board '{board_id}' not found."
+    
+    if board.status != BoardState.RESERVED:
+        return f"Error: Board '{board_id}' must be reserved before debugging."
+    
+    # Check if debugger already exists
+    if dm.get_debugger(board_id):
+        return f"Debug session already active for '{board_id}'."
+    
+    # Create debugger
+    debugger = dm.create_debugger(board)
+    
+    # Start session
+    result = await debugger.start_session()
+    
+    if result.success:
+        return f"✓ Debug session started for '{board_id}'\nGDB server listening on port {debugger.config.gdb_port}"
+    else:
+        return f"✗ Failed to start debug session: {result.message}"
+
+
+@mcp.tool()
+async def stop_debug_session(ctx: Context, board_id: str) -> str:
+    """Stop the GDB debug session for a board.
+    
+    Args:
+        board_id: The board to stop debugging
+        
+    Returns:
+        Session stop result
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    debugger = dm.get_debugger(board_id)
+    if not debugger:
+        return f"No active debug session for '{board_id}'."
+    
+    result = await debugger.stop_session()
+    dm.remove_debugger(board_id)
+    
+    if result.success:
+        return f"✓ Debug session stopped for '{board_id}'"
+    else:
+        return f"✗ Failed to stop debug session: {result.message}"
+
+
+@mcp.tool()
+async def step_debug(ctx: Context, board_id: str, step_type: str = "into") -> str:
+    """Step execution in the debugger.
+    
+    Args:
+        board_id: The board being debugged
+        step_type: "into", "over", or "out"
+        
+    Returns:
+        Step result with new location
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    debugger = dm.get_debugger(board_id)
+    if not debugger:
+        return f"Error: No active GDB session for '{board_id}'. Start a debug session first."
+    
+    from .gdb_debugger import StepType
+    st = StepType.INTO
+    if step_type == "over":
+        st = StepType.OVER
+    elif step_type == "out":
+        st = StepType.OUT
+    
+    result = await debugger.step(st)
+    
+    if result.success:
+        return f"✓ Stepped {step_type}\n{result.data}"
+    else:
+        return f"✗ Step failed: {result.message}"
+
+
+@mcp.tool()
+async def get_debug_state(ctx: Context, board_id: str) -> str:
+    """Get the current debug state (running, stopped, etc.).
+    
+    Args:
+        board_id: The board being debugged
+        
+    Returns:
+        Current debug state
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    debugger = dm.get_debugger(board_id)
+    if not debugger:
+        return f"Error: No active GDB session for '{board_id}'."
+    
+    result = await debugger.get_state()
+    
+    if result.success:
+        return f"Debug state: {result.data}"
+    else:
+        return f"Error: {result.message}"
+
+
+@mcp.tool()
+async def read_registers(ctx: Context, board_id: str) -> str:
+    """Read CPU registers from the debug target.
+    
+    Args:
+        board_id: The board being debugged
+        
+    Returns:
+        Register values
+    """
+    state: ServerState = ctx.request_context.lifespan_context
+    dm = state.debug_manager
+    
+    if not dm:
+        return "Error: Debug manager not initialized."
+    
+    debugger = dm.get_debugger(board_id)
+    if not debugger:
+        return f"Error: No active GDB session for '{board_id}'. Start a debug session first."
+    
+    result = await debugger.read_registers()
+    
+    if result.success:
+        lines = ["CPU Registers:", "-" * 40]
+        for reg in result.data.get('registers', []):
+            lines.append(f"  {reg['name']:8s}: 0x{reg['value']:08X}")
+        return "\n".join(lines)
+    else:
+        return f"Error reading registers: {result.message}"
 async def get_board_features(ctx: Context, board_id: str) -> str:
     """Get features and capabilities of a board.
     
