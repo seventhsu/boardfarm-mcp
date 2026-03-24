@@ -135,15 +135,15 @@ class OpenOCDFlasher:
         target_cfg = self._get_target_config(board)
         cmd.extend(["-f", target_cfg])
         
-        # For H7 dual-core, we need to select the core
+        # Add flash commands (core selection after init)
+        cmd.extend(["-c", "init"])
+        
+        # For H7 dual-core, select the core after init
         if core and 'h7' in board.mcu.lower():
-            # Select AP for the specific core
             ap = 0 if core.upper() == 'M7' else 1
             cmd.extend(["-c", f"dap apreg ap{ap} 0x0"])
         
-        # Add flash commands
         cmd.extend([
-            "-c", "init",
             "-c", "reset init",
             "-c", f"flash write_image erase {elf_path}",
             "-c", "reset run",
