@@ -250,8 +250,8 @@ class STLinkFlasher:
         
         logger.info(f"Flashing {build_result.build_id} to {board.board_id} using st-flash")
         
-        # Build st-flash command
-        cmd = ['st-flash', '--reset', 'write', str(bin_path), '0x08000000']
+        # Build st-flash command with connect-under-reset for H7
+        cmd = ['st-flash', '--connect-under-reset', '--reset', 'write', str(bin_path), '0x08000000']
         
         try:
             result = subprocess.run(
@@ -335,50 +335,3 @@ class MockFlasher:
         logger.info(f"[MOCK] Resetting {board.board_id} ({reset_type})")
         time.sleep(0.2)
         return True
-
-class PyOCDFlasher:
-    """Flasher using PyOCD - manufacturer agnostic."""
-    
-    def __init__(self):
-        self.timeout_seconds = 60
-    
-    def flash(self, board, build_result, core=None):
-        """Flash firmware using PyOCD."""
-        import time, subprocess
-        from pathlib import Path
-        from .models import FlashResult
-        
-        start_time = time.time()
-        target = self._get_target(board)
-        
-        # Determine file to flash
-        if build_result.bin_path and Path(build_result.bin_path).exists():
-            flash_file = build_result.bin_path
-        elif build_result.elf_path and Path(build_result.elf_path).exists():
-            flash_file = build_result.elf_path
-        else:
-            return FlashResult(success=False, board_id=board.board_id, build_id=build_result.build_id, error_message="No flashable file found")
-        
-        cmd = ['pyocd', 'flash', '--target', target, flash_file]
-        if core and 'h7' in board.mcu.lower():
-            ap = 0 if core.upper() == 'M7' else 1
-            cmd.extend(['--apid', str(ap)])
-        
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout_seconds)
-            success = result.returncode == 0
-            return FlashResult(success=success, board_id=board.board_id, build_id=build_result.build_id, bytes_written=Path(flash_file).stat().st_size if success else 0, verify_passed=success, stdout=result.stdout, stderr=result.stderr, duration_seconds=time.time() - start_time, error_message=result.stderr if not success else None)
-        except Exception as e:
-            return FlashResult(success=False, board_id=board.board_id, build_id=build_result.build_id, error_message=str(e))
-    
-    def _get_target(self, board):
-        target_map = {'STM32H755ZI': 'stm32h755zitx', 'STM32H755': 'stm32h755zitx', 'STM32H743ZI': 'stm32h743zitx', 'STM32F401RE': 'stm32f401retx'}
-        return target_map.get(board.mcu.upper(), board.mcu.lower().replace('stm32', 'stm32'))
-    
-    def reset(self, board, reset_type="soft"):
-        try:
-            import subprocess
-            result = subprocess.run(['pyocd', 'reset', '--target', self._get_target(board)], capture_output=True, timeout=10)
-            return result.returncode == 0
-        except:
-            return False

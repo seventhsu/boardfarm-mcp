@@ -33,7 +33,7 @@ from .build_providers import (
     BuildRequest, BuildProviderFactory, BuildStatus,
     LocalBuildProvider, DockerBuildProvider
 )
-from .flasher import PyOCDFlasher
+from .flasher import STLinkFlasher
 from .monitor import SerialMonitor, MockMonitor
 from .gdb_debugger import GDBDebuggerManager, GDBDebugger, StepType
 from .gdb_models import GDBServerConfig
@@ -95,7 +95,7 @@ async def app_lifespan(server: FastMCP):
     # Initialize new build manager with provider configuration
     build_providers_config = _load_build_config(config_path)
     state.build_manager = BuildManager(build_providers_config)
-    state.flasher = PyOCDFlasher()
+    state.flasher = STLinkFlasher()
     state.monitor = SerialMonitor()
     state.debug_manager = GDBDebuggerManager()
     logger.info(f"Server ready. Detected {len(state.board_manager.list_boards())} boards.")
